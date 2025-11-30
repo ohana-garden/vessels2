@@ -34,8 +34,9 @@ DEFAULT_SEARCH_THRESHOLD = 0.5
 
 class DocumentQueryStore:
     """
-    FAISS Store for document query results.
+    Graph-based store for document query results.
     Manages documents identified by URI for storage, retrieval, and searching.
+    Uses FalkorDB + Graphiti for vector storage and retrieval.
     """
 
     # Default chunking parameters

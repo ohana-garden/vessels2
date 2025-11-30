@@ -373,8 +373,8 @@ class MemoryConsolidator:
                 unique_similar.append(doc)
 
         # Step 5: Calculate similarity scores for replacement validation
-        # Since FAISS doesn't directly expose similarity scores, use ranking-based estimation
-        # CRITICAL: All documents must have similarity >= search_threshold since FAISS returned them
+        # Use ranking-based estimation for similarity scores
+        # CRITICAL: All documents must have similarity >= search_threshold since the graph search returned them
         # FIXED: Use conservative scoring that keeps all scores in safe consolidation range
         similarity_scores = {}
         total_docs = len(unique_similar)

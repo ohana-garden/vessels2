@@ -1,150 +1,236 @@
-from typing import Any, List, Sequence
+"""
+Vessels Vector DB - Graph-based Implementation
+
+This module provides a vector database interface using FalkorDB + Graphiti
+instead of FAISS. The API remains compatible with the original vector_db.py.
+"""
+
+from typing import Any, List, Optional
 import uuid
-from langchain_community.vectorstores import FAISS
+import asyncio
 
-# faiss needs to be patched for python 3.12 on arm #TODO remove once not needed
-from python.helpers import faiss_monkey_patch
-import faiss
-
-
-from langchain_core.documents import Document
-from langchain.storage import InMemoryByteStore
-from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_community.vectorstores.utils import (
-    DistanceStrategy,
+from python.helpers.graph_store import (
+    GraphStore,
+    MemoryArea,
+    get_graph_store,
 )
-from langchain.embeddings import CacheBackedEmbeddings
-from simpleeval import simple_eval
-
+from python.helpers.print_style import PrintStyle
 from agent import Agent
 
 
-class MyFaiss(FAISS):
-    # override aget_by_ids
-    def get_by_ids(self, ids: Sequence[str], /) -> List[Document]:
-        # return all self.docstore._dict[id] in ids
-        return [self.docstore._dict[id] for id in (ids if isinstance(ids, list) else [ids]) if id in self.docstore._dict]  # type: ignore
-
-    async def aget_by_ids(self, ids: Sequence[str], /) -> List[Document]:
-        return self.get_by_ids(ids)
-
-    def get_all_docs(self) -> dict[str, Document]:
-        return self.docstore._dict  # type: ignore
-
-
 class VectorDB:
+    """
+    Graph-based vector database for Vessels.
 
-    _cached_embeddings: dict[str, CacheBackedEmbeddings] = {}
+    This replaces the FAISS-based VectorDB with FalkorDB + Graphiti,
+    providing temporal knowledge graph capabilities while maintaining
+    API compatibility.
+    """
 
-    @staticmethod
-    def _get_embeddings(agent: Agent, cache: bool = True):
-        model = agent.get_embedding_model()
-        if not cache:
-            return model  # return raw embeddings if cache is False
-        namespace = getattr(
-            model,
-            "model_name",
-            "default",
-        )
-        if namespace not in VectorDB._cached_embeddings:
-            store = InMemoryByteStore()
-            VectorDB._cached_embeddings[namespace] = (
-                CacheBackedEmbeddings.from_bytes_store(
-                    model,
-                    store,
-                    namespace=namespace,
-                )
-            )
-        return VectorDB._cached_embeddings[namespace]
+    _graph_store: Optional[GraphStore] = None
+
+    @classmethod
+    async def _ensure_graph_store(cls) -> GraphStore:
+        """Ensure graph store is initialized."""
+        if cls._graph_store is None:
+            cls._graph_store = await get_graph_store()
+        return cls._graph_store
 
     def __init__(self, agent: Agent, cache: bool = True):
-        self.agent = agent
-        self.cache = cache  # store cache preference
-        self.embeddings = self._get_embeddings(agent, cache=cache)
-        self.index = faiss.IndexFlatIP(len(self.embeddings.embed_query("example")))
+        """
+        Initialize VectorDB for an agent.
 
-        self.db = MyFaiss(
-            embedding_function=self.embeddings,
-            index=self.index,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-            distance_strategy=DistanceStrategy.COSINE,
-            # normalize_L2=True,
-            relevance_score_fn=cosine_normalizer,
-        )
+        Args:
+            agent: The agent to create VectorDB for
+            cache: Whether to cache embeddings (ignored in graph implementation)
+        """
+        self.agent = agent
+        self.cache = cache
+        self._graph_store_instance: Optional[GraphStore] = None
+        self._group_id = f"vectordb_{id(self)}"
+
+    async def _get_graph_store(self) -> GraphStore:
+        """Get the graph store instance."""
+        if self._graph_store_instance is None:
+            self._graph_store_instance = await VectorDB._ensure_graph_store()
+        return self._graph_store_instance
 
     async def search_by_similarity_threshold(
-        self, query: str, limit: int, threshold: float, filter: str = ""
-    ):
-        comparator = get_comparator(filter) if filter else None
+        self,
+        query: str,
+        limit: int,
+        threshold: float,
+        filter: str = "",
+    ) -> list["_CompatDocument"]:
+        """
+        Search by semantic similarity with threshold.
 
-        return await self.db.asearch(
-            query,
-            search_type="similarity_score_threshold",
-            k=limit,
-            score_threshold=threshold,
-            filter=comparator,
+        Args:
+            query: Search query text
+            limit: Maximum results to return
+            threshold: Minimum similarity threshold (0-1)
+            filter: Optional filter expression
+
+        Returns:
+            List of matching documents
+        """
+        graph_store = await self._get_graph_store()
+
+        results = await graph_store.search_memories(
+            query=query,
+            limit=limit,
+            threshold=threshold,
+            memory_subdir=self._group_id,
         )
 
-    async def search_by_metadata(self, filter: str, limit: int = 0) -> list[Document]:
+        # Apply filter if provided
+        if filter:
+            comparator = get_comparator(filter)
+            results = [r for r in results if comparator(r.get("metadata", {}))]
+
+        return [_dict_to_document(r) for r in results]
+
+    async def search_by_metadata(
+        self,
+        filter: str,
+        limit: int = 0,
+    ) -> list["_CompatDocument"]:
+        """
+        Search by metadata filter.
+
+        Args:
+            filter: Filter expression
+            limit: Maximum results (0 = unlimited)
+
+        Returns:
+            List of matching documents
+        """
+        graph_store = await self._get_graph_store()
+
+        # Search with a generic query and filter by metadata
+        results = await graph_store.search_memories(
+            query="*",
+            limit=limit if limit > 0 else 1000,
+            threshold=0.0,
+            memory_subdir=self._group_id,
+        )
+
+        # Apply filter
         comparator = get_comparator(filter)
-        all_docs = self.db.get_all_docs()
-        result = []
-        for doc in all_docs.values():
-            if comparator(doc.metadata):
-                result.append(doc)
-                # stop if limit reached and limit > 0
-                if limit > 0 and len(result) >= limit:
+        filtered = []
+        for r in results:
+            if comparator(r.get("metadata", {})):
+                filtered.append(_dict_to_document(r))
+                if limit > 0 and len(filtered) >= limit:
                     break
-        return result
 
-    async def insert_documents(self, docs: list[Document]):
-        ids = [str(uuid.uuid4()) for _ in range(len(docs))]
+        return filtered
 
-        if ids:
-            for doc, id in zip(docs, ids):
-                doc.metadata["id"] = id  # add ids to documents metadata
+    async def insert_documents(self, docs: list[Any]) -> list[str]:
+        """
+        Insert documents into the vector database.
 
-            self.db.add_documents(documents=docs, ids=ids)
+        Args:
+            docs: List of Document-like objects
+
+        Returns:
+            List of generated document IDs
+        """
+        graph_store = await self._get_graph_store()
+        ids = []
+
+        for doc in docs:
+            doc_id = str(uuid.uuid4())
+            content = getattr(doc, 'page_content', str(doc))
+            metadata = getattr(doc, 'metadata', {})
+            metadata['id'] = doc_id
+
+            await graph_store.save_memory(
+                content=content,
+                area=MemoryArea.MAIN,
+                metadata=metadata,
+                memory_subdir=self._group_id,
+            )
+            ids.append(doc_id)
+
         return ids
 
-    async def delete_documents_by_ids(self, ids: list[str]):
-        # aget_by_ids is not yet implemented in faiss, need to do a workaround
-        rem_docs = await self.db.aget_by_ids(
-            ids
-        )  # existing docs to remove (prevents error)
-        if rem_docs:
-            rem_ids = [doc.metadata["id"] for doc in rem_docs]  # ids to remove
-            await self.db.adelete(ids=rem_ids)
-        return rem_docs
+    async def delete_documents_by_ids(self, ids: list[str]) -> list[Any]:
+        """
+        Delete documents by their IDs.
+
+        Args:
+            ids: List of document IDs to delete
+
+        Returns:
+            List of deleted documents (empty in graph implementation)
+        """
+        graph_store = await self._get_graph_store()
+        await graph_store.delete_memories(ids, self._group_id)
+        return []
 
 
-def format_docs_plain(docs: list[Document]) -> list[str]:
+# =============================================================================
+# Compatibility Layer
+# =============================================================================
+
+class _CompatDocument:
+    """Compatibility wrapper for Document-like objects."""
+
+    def __init__(self, page_content: str, metadata: dict):
+        self.page_content = page_content
+        self.metadata = metadata
+
+
+def _dict_to_document(data: dict) -> _CompatDocument:
+    """Convert dictionary to Document-like object."""
+    content = data.get("content", "")
+    metadata = {
+        "id": data.get("id", ""),
+        "score": data.get("score", 1.0),
+        **data.get("metadata", {}),
+    }
+    return _CompatDocument(content, metadata)
+
+
+def format_docs_plain(docs: list[Any]) -> list[str]:
+    """Format documents as plain text strings."""
     result = []
     for doc in docs:
         text = ""
-        for k, v in doc.metadata.items():
+        metadata = getattr(doc, 'metadata', {})
+        for k, v in metadata.items():
             text += f"{k}: {v}\n"
-        text += f"Content: {doc.page_content}"
+        content = getattr(doc, 'page_content', str(doc))
+        text += f"Content: {content}"
         result.append(text)
     return result
 
 
 def cosine_normalizer(val: float) -> float:
+    """Normalize cosine similarity score to 0-1 range."""
     res = (1 + val) / 2
-    res = max(
-        0, min(1, res)
-    )  # float precision can cause values like 1.0000000596046448
+    res = max(0, min(1, res))
     return res
 
 
 def get_comparator(condition: str):
-    def comparator(data: dict[str, Any]):
+    """
+    Create a comparator function from a filter expression.
+
+    Args:
+        condition: Filter expression (e.g., "area == 'main'")
+
+    Returns:
+        Function that evaluates the condition against metadata
+    """
+    from simpleeval import simple_eval
+
+    def comparator(data: dict[str, Any]) -> bool:
         try:
             result = simple_eval(condition, {}, data)
-            return result
-        except Exception as e:
-            # PrintStyle.error(f"Error evaluating condition: {e}")
+            return bool(result)
+        except Exception:
             return False
 
     return comparator
