@@ -616,6 +616,141 @@ class GraphStore:
         return knowledge_items
 
     # =========================================================================
+    # Content Store Operations (replaces file-based .md storage)
+    # =========================================================================
+
+    async def save_content(self, path: str, content: str, content_type: str = "prompt") -> None:
+        """
+        Save file content to the graph, keyed by relative path.
+
+        Args:
+            path: Relative path (e.g., 'prompts/agent.system.main.md')
+            content: Raw file content
+            content_type: Type of content (prompt, doc, instrument, knowledge)
+        """
+        # Normalize path
+        path = path.replace("\\", "/").lstrip("/")
+
+        content_data = json.dumps({
+            "path": path,
+            "content": content,
+            "content_type": content_type,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Upsert - delete old and insert new
+        await self.delete_content(path)
+
+        await self._graphiti.add_episode(
+            name=f"content:{path}",
+            episode_body=content_data,
+            source=EpisodeType.json,
+            reference_time=datetime.now(timezone.utc),
+            group_id=f"content:{content_type}",
+        )
+
+    async def get_content(self, path: str) -> Optional[str]:
+        """
+        Get file content from the graph by path.
+
+        Returns: Raw file content or None if not found
+        """
+        path = path.replace("\\", "/").lstrip("/")
+
+        query = f"""
+        MATCH (n:Episode) WHERE n.name = 'content:{path}'
+        RETURN n.content as content
+        """
+        result = await self._driver.execute_query(query)
+
+        if result and len(result) > 0:
+            try:
+                data = json.loads(result[0].get("content", "{}"))
+                return data.get("content")
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    async def content_exists(self, path: str) -> bool:
+        """Check if content exists for the given path."""
+        path = path.replace("\\", "/").lstrip("/")
+
+        query = f"""
+        MATCH (n:Episode) WHERE n.name = 'content:{path}'
+        RETURN count(n) as count
+        """
+        result = await self._driver.execute_query(query)
+
+        if result and len(result) > 0:
+            return result[0].get("count", 0) > 0
+        return False
+
+    async def delete_content(self, path: str) -> bool:
+        """Delete content by path."""
+        path = path.replace("\\", "/").lstrip("/")
+
+        query = f"""
+        MATCH (n:Episode) WHERE n.name = 'content:{path}'
+        DETACH DELETE n
+        """
+        try:
+            await self._driver.execute_query(query)
+            return True
+        except Exception:
+            return False
+
+    async def list_content(self, content_type: Optional[str] = None) -> list[str]:
+        """List all content paths, optionally filtered by type."""
+        if content_type:
+            query = f"""
+            MATCH (n:Episode) WHERE n.name STARTS WITH 'content:' AND n.group_id = 'content:{content_type}'
+            RETURN n.name as name
+            """
+        else:
+            query = """
+            MATCH (n:Episode) WHERE n.name STARTS WITH 'content:'
+            RETURN n.name as name
+            """
+
+        results = await self._driver.execute_query(query)
+
+        paths = []
+        for row in results:
+            name = row.get("name", "")
+            if name.startswith("content:"):
+                paths.append(name[8:])  # Remove 'content:' prefix
+
+        return paths
+
+    async def get_all_content(self, content_type: Optional[str] = None) -> dict[str, str]:
+        """Get all content as a dict of path -> content."""
+        if content_type:
+            query = f"""
+            MATCH (n:Episode) WHERE n.name STARTS WITH 'content:' AND n.group_id = 'content:{content_type}'
+            RETURN n.name as name, n.content as content
+            """
+        else:
+            query = """
+            MATCH (n:Episode) WHERE n.name STARTS WITH 'content:'
+            RETURN n.name as name, n.content as content
+            """
+
+        results = await self._driver.execute_query(query)
+
+        content_map = {}
+        for row in results:
+            name = row.get("name", "")
+            if name.startswith("content:"):
+                path = name[8:]
+                try:
+                    data = json.loads(row.get("content", "{}"))
+                    content_map[path] = data.get("content", "")
+                except json.JSONDecodeError:
+                    pass
+
+        return content_map
+
+    # =========================================================================
     # Utility Methods
     # =========================================================================
 
@@ -714,4 +849,68 @@ class MigrationHelper:
                 except Exception as e:
                     PrintStyle.error(f"Failed to migrate chat {folder}: {e}")
 
+        return migrated
+
+    @staticmethod
+    async def migrate_md_files_to_graph(
+        graph_store: GraphStore,
+        base_dir: Optional[str] = None,
+    ) -> int:
+        """
+        Migrate all .md files from filesystem to graph store.
+
+        Returns: Number of files migrated
+        """
+        import os
+        import glob as glob_module
+
+        if base_dir is None:
+            # Get the base directory of the application
+            base_dir = os.path.dirname(os.path.abspath(os.path.join(__file__, "../../")))
+
+        migrated = 0
+
+        # Define content type mappings based on directory
+        type_mappings = {
+            "prompts/": "prompt",
+            "agents/": "prompt",
+            "docs/": "doc",
+            "instruments/": "instrument",
+            "knowledge/": "knowledge",
+        }
+
+        # Find all .md files
+        pattern = os.path.join(base_dir, "**/*.md")
+        md_files = glob_module.glob(pattern, recursive=True)
+
+        for file_path in md_files:
+            try:
+                # Get relative path
+                rel_path = os.path.relpath(file_path, base_dir)
+                rel_path = rel_path.replace("\\", "/")
+
+                # Skip certain directories
+                if rel_path.startswith(("work_dir/", "tmp/", ".git/", "node_modules/")):
+                    continue
+
+                # Determine content type
+                content_type = "other"
+                for prefix, ctype in type_mappings.items():
+                    if rel_path.startswith(prefix):
+                        content_type = ctype
+                        break
+
+                # Read file content
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                # Save to graph
+                await graph_store.save_content(rel_path, content, content_type)
+                migrated += 1
+                PrintStyle.standard(f"Migrated: {rel_path}")
+
+            except Exception as e:
+                PrintStyle.error(f"Failed to migrate {file_path}: {e}")
+
+        PrintStyle.standard(f"Migration complete: {migrated} files migrated")
         return migrated

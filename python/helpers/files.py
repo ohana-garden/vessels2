@@ -8,13 +8,126 @@ import re
 import base64
 import shutil
 import tempfile
-from typing import Any
+from typing import Any, Optional
 import zipfile
 import importlib
 import importlib.util
 import inspect
 import glob
 import mimetypes
+import asyncio
+import threading
+
+
+# =============================================================================
+# Content Cache - Loads content from FalkorDB for DB-first file reading
+# =============================================================================
+
+class ContentCache:
+    """
+    Cache for file content loaded from FalkorDB.
+    Provides DB-first file reading with filesystem fallback.
+    """
+
+    _instance: Optional["ContentCache"] = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self._cache: dict[str, str] = {}
+        self._loaded = False
+        self._enabled = True  # Can disable DB lookup
+
+    @classmethod
+    def get_instance(cls) -> "ContentCache":
+        """Get singleton instance."""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    def enable(self, enabled: bool = True) -> None:
+        """Enable or disable DB-first lookup."""
+        self._enabled = enabled
+
+    def is_loaded(self) -> bool:
+        """Check if cache has been loaded from DB."""
+        return self._loaded
+
+    def load_from_dict(self, content_map: dict[str, str]) -> None:
+        """Load content from a dictionary (path -> content)."""
+        self._cache = content_map.copy()
+        self._loaded = True
+
+    async def load_from_db(self) -> int:
+        """Load all content from FalkorDB."""
+        try:
+            from python.helpers.graph_store import get_graph_store
+            store = await get_graph_store()
+            content_map = await store.get_all_content()
+            self._cache = content_map
+            self._loaded = True
+            return len(content_map)
+        except Exception:
+            # DB not available, use filesystem
+            self._loaded = False
+            return 0
+
+    def load_from_db_sync(self) -> int:
+        """Synchronous wrapper for load_from_db."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Can't use asyncio.run in running loop
+                return 0
+        except RuntimeError:
+            pass
+
+        try:
+            return asyncio.run(self.load_from_db())
+        except Exception:
+            return 0
+
+    def get(self, path: str) -> Optional[str]:
+        """Get content by path. Returns None if not found."""
+        if not self._enabled:
+            return None
+
+        # Normalize path
+        path = path.replace("\\", "/").lstrip("/")
+
+        # Check cache
+        if path in self._cache:
+            return self._cache[path]
+
+        return None
+
+    def set(self, path: str, content: str) -> None:
+        """Set content in cache."""
+        path = path.replace("\\", "/").lstrip("/")
+        self._cache[path] = content
+
+    def has(self, path: str) -> bool:
+        """Check if path exists in cache."""
+        if not self._enabled:
+            return False
+        path = path.replace("\\", "/").lstrip("/")
+        return path in self._cache
+
+    def clear(self) -> None:
+        """Clear the cache."""
+        self._cache.clear()
+        self._loaded = False
+
+
+def get_content_cache() -> ContentCache:
+    """Get the content cache singleton."""
+    return ContentCache.get_instance()
+
+
+def init_content_cache() -> int:
+    """Initialize content cache from FalkorDB. Returns number of items loaded."""
+    cache = get_content_cache()
+    return cache.load_from_db_sync()
 
 
 class VariablesPlugin(ABC):
@@ -127,13 +240,33 @@ def read_prompt_file(
         _file = os.path.basename(_file)
         _directories = [folder_path] + _directories
 
-    # Find the file in the directories
-    absolute_path = find_file_in_dirs(_file, _directories)
+    content = None
+    absolute_path = None
 
-    # Read the file content
-    with open(absolute_path, "r", encoding=_encoding) as f:
-        # content = remove_code_fences(f.read())
-        content = f.read()
+    # Try content cache first (DB-first approach)
+    cache = get_content_cache()
+    if cache.is_loaded():
+        # Try each directory to find content in cache
+        for directory in _directories:
+            rel_path = os.path.join(directory, _file).replace("\\", "/")
+            # Convert absolute to relative if needed
+            base_dir = get_base_dir()
+            if rel_path.startswith(base_dir):
+                rel_path = os.path.relpath(rel_path, base_dir).replace("\\", "/")
+            elif rel_path.startswith("/"):
+                rel_path = rel_path.lstrip("/")
+
+            cached = cache.get(rel_path)
+            if cached is not None:
+                content = cached
+                absolute_path = os.path.join(base_dir, rel_path)
+                break
+
+    # Fallback to filesystem if not in cache
+    if content is None:
+        absolute_path = find_file_in_dirs(_file, _directories)
+        with open(absolute_path, "r", encoding=_encoding) as f:
+            content = f.read()
 
     variables = load_plugin_variables(_file, _directories, **kwargs) or {}  # type: ignore
     variables.update(kwargs)
@@ -153,10 +286,16 @@ def read_prompt_file(
 
 
 def read_file(relative_path: str, encoding="utf-8"):
-    # Try to get the absolute path for the file from the original directory or backup directories
-    absolute_path = get_abs_path(relative_path)
+    # Try content cache first for .md files
+    if relative_path.endswith(".md"):
+        cache = get_content_cache()
+        if cache.is_loaded():
+            cached = cache.get(relative_path)
+            if cached is not None:
+                return cached
 
-    # Read the file content
+    # Fallback to filesystem
+    absolute_path = get_abs_path(relative_path)
     with open(absolute_path, "r", encoding=encoding) as f:
         return f.read()
 

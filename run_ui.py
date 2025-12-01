@@ -266,6 +266,9 @@ def run():
 
 
 def init_a0():
+    # initialize content cache from FalkorDB (for DB-first prompt loading)
+    initialize.initialize_content_cache()
+
     # initialize contexts and MCP
     init_chats = initialize.initialize_chats()
     # only wait for init chats, otherwise they would seem to disappear for a while on restart
