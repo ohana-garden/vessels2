@@ -1,5 +1,5 @@
 ## Financial management tool:
-double-entry bookkeeping with TigerBeetle + Graphiti
+double-entry bookkeeping with TigerBeetle
 accounts transfers balances two-phase commits
 all amounts in smallest unit (cents)
 
@@ -18,12 +18,9 @@ create new financial account
     "tool_name": "financial",
     "tool_args": {
         "operation": "create_account",
-        "name": "User Wallet",
         "ledger": 1,
         "code": 100,
         "account_type": "asset",
-        "owner": "user_123",
-        "description": "Main user wallet",
         "no_overdraft": true
     }
 }
@@ -44,8 +41,7 @@ move funds between accounts (immediate)
         "credit_account": 67890,
         "amount": 1000,
         "ledger": 1,
-        "code": 1,
-        "reason": "Payment for order #123"
+        "code": 1
     }
 }
 ~~~
@@ -65,8 +61,7 @@ two-phase transfer (hold funds)
         "credit_account": 67890,
         "amount": 5000,
         "ledger": 1,
-        "timeout": 3600,
-        "reason": "Pre-authorization for hotel"
+        "timeout": 3600
     }
 }
 ~~~
@@ -120,7 +115,7 @@ check account balance
 ~~~
 
 ### get_account
-get account with context and balance
+get full account details
 ~~~json
 {
     "thoughts": [
@@ -131,56 +126,6 @@ get account with context and balance
     "tool_args": {
         "operation": "get_account",
         "account_id": 12345
-    }
-}
-~~~
-
-### search_transfers
-search transfers by reason or context
-~~~json
-{
-    "thoughts": [
-        "Finding all hotel-related transfers"
-    ],
-    "headline": "Searching transfers",
-    "tool_name": "financial",
-    "tool_args": {
-        "operation": "search_transfers",
-        "query": "hotel authorization",
-        "limit": 10
-    }
-}
-~~~
-
-### get_history
-get transfer history for account
-~~~json
-{
-    "thoughts": [
-        "Getting transaction history"
-    ],
-    "headline": "Retrieving transfer history",
-    "tool_name": "financial",
-    "tool_args": {
-        "operation": "get_history",
-        "account_id": 12345,
-        "limit": 50
-    }
-}
-~~~
-
-### find_accounts
-find accounts by owner entity
-~~~json
-{
-    "thoughts": [
-        "Finding all accounts for this user"
-    ],
-    "headline": "Finding user accounts",
-    "tool_name": "financial",
-    "tool_args": {
-        "operation": "find_accounts",
-        "owner": "user_123"
     }
 }
 ~~~
