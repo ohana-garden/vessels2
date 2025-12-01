@@ -1,8 +1,56 @@
 services:
-  agent-zero:
-    container_name: agent-zero
-    image: agent0ai/agent-zero:latest
+  vessels:
+    container_name: vessels
+    build:
+      context: .
+      args:
+        BRANCH: ${BRANCH:-main}
     volumes:
-      - ./agent-zero:/a0
+      - ./vessels-data:/vessels
     ports:
       - "50080:80"
+    environment:
+      - FALKORDB_HOST=falkordb
+      - FALKORDB_PORT=6379
+      - FALKORDB_DATABASE=vessels
+      - TIGERBEETLE_HOST=tigerbeetle
+      - TIGERBEETLE_PORT=3000
+      - TIGERBEETLE_CLUSTER_ID=0
+    depends_on:
+      falkordb:
+        condition: service_healthy
+      tigerbeetle:
+        condition: service_started
+
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: falkordb
+    ports:
+      - "6379:6379"
+    volumes:
+      - falkordb-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    container_name: tigerbeetle
+    ports:
+      - "3000:3000"
+    volumes:
+      - tigerbeetle-data:/data
+    command: start --addresses=0.0.0.0:3000 /data/0_0.tigerbeetle
+    entrypoint: ["/bin/sh", "-c"]
+    # Initialize data file if it doesn't exist, then start
+    command: |
+      if [ ! -f /data/0_0.tigerbeetle ]; then
+        /tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+      fi
+      exec /tigerbeetle start --addresses=0.0.0.0:3000 /data/0_0.tigerbeetle
+
+volumes:
+  falkordb-data:
+  tigerbeetle-data:
