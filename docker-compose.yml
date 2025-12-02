@@ -1,5 +1,9 @@
 # Vessels Development Stack
 # Usage: docker compose up -d
+#
+# TODO [PRODUCTION]: Remove external port bindings before release.
+# FalkorDB (6379) and TigerBeetle (3000) are exposed for dev debugging only.
+# Production should use internal networking only or add authentication.
 
 services:
   falkordb:
