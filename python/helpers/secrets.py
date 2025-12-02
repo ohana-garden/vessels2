@@ -148,13 +148,41 @@ class SecretsManager:
         self._last_raw_text = None
 
     def read_secrets_raw(self) -> str:
-        """Read raw secrets file content from local filesystem (same system)."""
+        """Read raw secrets content - tries FalkorDB first, then filesystem."""
+        # Try FalkorDB first
+        try:
+            import asyncio
+            from python.helpers.graph_store import get_graph_store
+
+            async def _load_from_db():
+                store = await get_graph_store()
+                return await store.load_secrets()
+
+            try:
+                loop = asyncio.get_event_loop()
+                if not loop.is_running():
+                    db_content = asyncio.run(_load_from_db())
+                    if db_content is not None:
+                        self._last_raw_text = db_content
+                        return db_content
+            except RuntimeError:
+                db_content = asyncio.run(_load_from_db())
+                if db_content is not None:
+                    self._last_raw_text = db_content
+                    return db_content
+        except Exception:
+            pass  # FalkorDB not available, try files
+
+        # Fallback to filesystem (supports encrypted files)
         parts: List[str] = []
         self._raw_snapshots = {}
 
         for path in self._files:
             try:
-                content = files.read_file(path)
+                # Try encrypted read first, falls back to plain text
+                content = files.read_file_encrypted(path)
+                if content is None:
+                    content = files.read_file(path)
             except Exception:
                 content = ""
 
@@ -166,12 +194,30 @@ class SecretsManager:
         return combined
 
     def _write_secrets_raw(self, content: str):
-        """Write raw secrets file content to local filesystem."""
+        """Write raw secrets content - FalkorDB only (no filesystem backup for security)."""
         if len(self._files) != 1:
             raise RuntimeError(
                 "Saving secrets content is only supported for a single secrets file"
             )
-        files.write_file(self._files[0], content)
+
+        # Write to FalkorDB only (no filesystem backup for security)
+        try:
+            import asyncio
+            from python.helpers.graph_store import get_graph_store
+
+            async def _save_to_db():
+                store = await get_graph_store()
+                await store.save_secrets(content)
+
+            try:
+                loop = asyncio.get_event_loop()
+                if not loop.is_running():
+                    asyncio.run(_save_to_db())
+            except RuntimeError:
+                asyncio.run(_save_to_db())
+        except Exception:
+            # Fallback to encrypted file ONLY if DB is unavailable (not as backup)
+            files.write_file_encrypted(self._files[0], content)
 
     def load_secrets(self) -> Dict[str, str]:
         """Load secrets from file, return key-value dict"""

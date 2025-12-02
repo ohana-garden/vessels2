@@ -8,13 +8,126 @@ import re
 import base64
 import shutil
 import tempfile
-from typing import Any
+from typing import Any, Optional
 import zipfile
 import importlib
 import importlib.util
 import inspect
 import glob
 import mimetypes
+import asyncio
+import threading
+
+
+# =============================================================================
+# Content Cache - Loads content from FalkorDB for DB-first file reading
+# =============================================================================
+
+class ContentCache:
+    """
+    Cache for file content loaded from FalkorDB.
+    Provides DB-first file reading with filesystem fallback.
+    """
+
+    _instance: Optional["ContentCache"] = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self._cache: dict[str, str] = {}
+        self._loaded = False
+        self._enabled = True  # Can disable DB lookup
+
+    @classmethod
+    def get_instance(cls) -> "ContentCache":
+        """Get singleton instance."""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    def enable(self, enabled: bool = True) -> None:
+        """Enable or disable DB-first lookup."""
+        self._enabled = enabled
+
+    def is_loaded(self) -> bool:
+        """Check if cache has been loaded from DB."""
+        return self._loaded
+
+    def load_from_dict(self, content_map: dict[str, str]) -> None:
+        """Load content from a dictionary (path -> content)."""
+        self._cache = content_map.copy()
+        self._loaded = True
+
+    async def load_from_db(self) -> int:
+        """Load all content from FalkorDB."""
+        try:
+            from python.helpers.graph_store import get_graph_store
+            store = await get_graph_store()
+            content_map = await store.get_all_content()
+            self._cache = content_map
+            self._loaded = True
+            return len(content_map)
+        except Exception:
+            # DB not available, use filesystem
+            self._loaded = False
+            return 0
+
+    def load_from_db_sync(self) -> int:
+        """Synchronous wrapper for load_from_db."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Can't use asyncio.run in running loop
+                return 0
+        except RuntimeError:
+            pass
+
+        try:
+            return asyncio.run(self.load_from_db())
+        except Exception:
+            return 0
+
+    def get(self, path: str) -> Optional[str]:
+        """Get content by path. Returns None if not found."""
+        if not self._enabled:
+            return None
+
+        # Normalize path
+        path = path.replace("\\", "/").lstrip("/")
+
+        # Check cache
+        if path in self._cache:
+            return self._cache[path]
+
+        return None
+
+    def set(self, path: str, content: str) -> None:
+        """Set content in cache."""
+        path = path.replace("\\", "/").lstrip("/")
+        self._cache[path] = content
+
+    def has(self, path: str) -> bool:
+        """Check if path exists in cache."""
+        if not self._enabled:
+            return False
+        path = path.replace("\\", "/").lstrip("/")
+        return path in self._cache
+
+    def clear(self) -> None:
+        """Clear the cache."""
+        self._cache.clear()
+        self._loaded = False
+
+
+def get_content_cache() -> ContentCache:
+    """Get the content cache singleton."""
+    return ContentCache.get_instance()
+
+
+def init_content_cache() -> int:
+    """Initialize content cache from FalkorDB. Returns number of items loaded."""
+    cache = get_content_cache()
+    return cache.load_from_db_sync()
 
 
 class VariablesPlugin(ABC):
@@ -127,13 +240,33 @@ def read_prompt_file(
         _file = os.path.basename(_file)
         _directories = [folder_path] + _directories
 
-    # Find the file in the directories
-    absolute_path = find_file_in_dirs(_file, _directories)
+    content = None
+    absolute_path = None
 
-    # Read the file content
-    with open(absolute_path, "r", encoding=_encoding) as f:
-        # content = remove_code_fences(f.read())
-        content = f.read()
+    # Try content cache first (DB-first approach)
+    cache = get_content_cache()
+    if cache.is_loaded():
+        # Try each directory to find content in cache
+        for directory in _directories:
+            rel_path = os.path.join(directory, _file).replace("\\", "/")
+            # Convert absolute to relative if needed
+            base_dir = get_base_dir()
+            if rel_path.startswith(base_dir):
+                rel_path = os.path.relpath(rel_path, base_dir).replace("\\", "/")
+            elif rel_path.startswith("/"):
+                rel_path = rel_path.lstrip("/")
+
+            cached = cache.get(rel_path)
+            if cached is not None:
+                content = cached
+                absolute_path = os.path.join(base_dir, rel_path)
+                break
+
+    # Fallback to filesystem if not in cache
+    if content is None:
+        absolute_path = find_file_in_dirs(_file, _directories)
+        with open(absolute_path, "r", encoding=_encoding) as f:
+            content = f.read()
 
     variables = load_plugin_variables(_file, _directories, **kwargs) or {}  # type: ignore
     variables.update(kwargs)
@@ -153,10 +286,16 @@ def read_prompt_file(
 
 
 def read_file(relative_path: str, encoding="utf-8"):
-    # Try to get the absolute path for the file from the original directory or backup directories
-    absolute_path = get_abs_path(relative_path)
+    # Try content cache first for .md files
+    if relative_path.endswith(".md"):
+        cache = get_content_cache()
+        if cache.is_loaded():
+            cached = cache.get(relative_path)
+            if cached is not None:
+                return cached
 
-    # Read the file content
+    # Fallback to filesystem
+    absolute_path = get_abs_path(relative_path)
     with open(absolute_path, "r", encoding=encoding) as f:
         return f.read()
 
@@ -179,25 +318,104 @@ def read_file_base64(relative_path):
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+# =============================================================================
+# Template Security - Prevents prompt injection via template placeholders
+# =============================================================================
+
+class TrustedString(str):
+    """
+    Marker class for strings that are system-generated and trusted.
+    These will NOT be escaped when used in template substitution.
+    Use for internal system values only, never for user input.
+    """
+    pass
+
+
+def trusted(value: str) -> TrustedString:
+    """Mark a string as trusted (system-generated). Will not be escaped in templates."""
+    return TrustedString(value)
+
+
+def escape_template_delimiters(text: str) -> str:
+    """
+    Escape template delimiters in untrusted input to prevent prompt injection.
+    Converts {{ to { { and }} to } } (with zero-width space).
+    This neutralizes any injection attempts while preserving readability.
+    """
+    if not isinstance(text, str):
+        return text
+    # Use Unicode zero-width space (U+200B) to break delimiter sequences
+    # This is invisible but prevents template evaluation
+    return text.replace("{{", "{\u200b{").replace("}}", "}\u200b}")
+
+
+def _prepare_template_value(value: Any, for_json: bool = False) -> str:
+    """
+    Prepare a value for template substitution.
+    - TrustedString values are used as-is (system-generated)
+    - All other values are escaped to prevent injection
+    """
+    if isinstance(value, TrustedString):
+        # Trusted system value - no escaping
+        return json.dumps(str(value)) if for_json else str(value)
+
+    if for_json:
+        # For JSON templates, escape the string value, then JSON encode
+        if isinstance(value, str):
+            escaped = escape_template_delimiters(value)
+            return json.dumps(escaped)
+        elif isinstance(value, (dict, list)):
+            # Recursively escape strings in complex structures
+            escaped = _escape_structure(value)
+            return json.dumps(escaped)
+        else:
+            return json.dumps(value)
+    else:
+        # For text templates, escape and convert to string
+        strval = str(value)
+        return escape_template_delimiters(strval)
+
+
+def _escape_structure(obj: Any) -> Any:
+    """Recursively escape template delimiters in nested structures."""
+    if isinstance(obj, TrustedString):
+        return str(obj)
+    elif isinstance(obj, str):
+        return escape_template_delimiters(obj)
+    elif isinstance(obj, dict):
+        return {k: _escape_structure(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_escape_structure(item) for item in obj]
+    else:
+        return obj
+
+
 def replace_placeholders_text(_content: str, **kwargs):
-    # Replace placeholders with values from kwargs
+    """
+    Replace placeholders with values from kwargs.
+    All values are escaped unless marked as TrustedString.
+    """
     for key, value in kwargs.items():
         placeholder = "{{" + key + "}}"
-        strval = str(value)
+        strval = _prepare_template_value(value, for_json=False)
         _content = _content.replace(placeholder, strval)
     return _content
 
 
 def replace_placeholders_json(_content: str, **kwargs):
-    # Replace placeholders with values from kwargs
+    """
+    Replace placeholders with JSON-encoded values from kwargs.
+    All values are escaped unless marked as TrustedString.
+    """
     for key, value in kwargs.items():
         placeholder = "{{" + key + "}}"
-        strval = json.dumps(value)
+        strval = _prepare_template_value(value, for_json=True)
         _content = _content.replace(placeholder, strval)
     return _content
 
 
 def replace_placeholders_dict(_content: dict, **kwargs):
+    """Replace placeholders in dict structure. Values are escaped unless trusted."""
     def replace_value(value):
         if isinstance(value, str):
             placeholders = re.findall(r"{{(\w+)}}", value)
@@ -206,14 +424,19 @@ def replace_placeholders_dict(_content: dict, **kwargs):
                     if placeholder in kwargs:
                         replacement = kwargs[placeholder]
                         if value == f"{{{{{placeholder}}}}}":
-                            return replacement
+                            # Full replacement - escape if needed
+                            if isinstance(replacement, TrustedString):
+                                return str(replacement)
+                            return _escape_structure(replacement)
                         elif isinstance(replacement, (dict, list)):
+                            escaped = _escape_structure(replacement)
                             value = value.replace(
-                                f"{{{{{placeholder}}}}}", json.dumps(replacement)
+                                f"{{{{{placeholder}}}}}", json.dumps(escaped)
                             )
                         else:
+                            escaped = _prepare_template_value(replacement, for_json=False)
                             value = value.replace(
-                                f"{{{{{placeholder}}}}}", str(replacement)
+                                f"{{{{{placeholder}}}}}", escaped
                             )
             return value
         elif isinstance(value, dict):
@@ -308,6 +531,118 @@ def write_file(relative_path: str, content: str, encoding: str = "utf-8"):
     content = sanitize_string(content, encoding)
     with open(abs_path, "w", encoding=encoding) as f:
         f.write(content)
+
+
+def write_file_secure(relative_path: str, content: str, encoding: str = "utf-8"):
+    """Write file with secure permissions (600) - owner read/write only.
+    Use for sensitive files like settings and secrets fallbacks."""
+    import stat
+
+    abs_path = get_abs_path(relative_path)
+    dir_path = os.path.dirname(abs_path)
+
+    # Create directory with secure permissions (700)
+    os.makedirs(dir_path, exist_ok=True)
+    try:
+        os.chmod(dir_path, stat.S_IRWXU)  # 700 - owner only
+    except OSError:
+        pass  # May fail on some filesystems
+
+    content = sanitize_string(content, encoding)
+
+    # Write file
+    with open(abs_path, "w", encoding=encoding) as f:
+        f.write(content)
+
+    # Set secure permissions (600) - owner read/write only
+    try:
+        os.chmod(abs_path, stat.S_IRUSR | stat.S_IWUSR)  # 600
+    except OSError:
+        pass  # May fail on some filesystems
+
+
+def write_file_encrypted(relative_path: str, content: str, key: Optional[bytes] = None):
+    """Write file with encryption. Falls back to secure write if encryption unavailable.
+    Use for highly sensitive files."""
+    import stat
+    import hashlib
+
+    abs_path = get_abs_path(relative_path)
+    dir_path = os.path.dirname(abs_path)
+
+    # Create directory with secure permissions
+    os.makedirs(dir_path, exist_ok=True)
+    try:
+        os.chmod(dir_path, stat.S_IRWXU)  # 700
+    except OSError:
+        pass
+
+    # Try to encrypt
+    encrypted = False
+    try:
+        from cryptography.fernet import Fernet
+
+        # Generate or use provided key
+        if key is None:
+            # Derive key from machine-specific data
+            from python.helpers.runtime import get_persistent_id
+            machine_id = get_persistent_id()
+            key = base64.urlsafe_b64encode(hashlib.sha256(machine_id.encode()).digest())
+
+        fernet = Fernet(key)
+        encrypted_content = fernet.encrypt(content.encode('utf-8'))
+
+        with open(abs_path, "wb") as f:
+            f.write(b"ENCRYPTED:" + encrypted_content)
+        encrypted = True
+    except ImportError:
+        pass  # cryptography not available
+    except Exception:
+        pass  # encryption failed
+
+    if not encrypted:
+        # Fallback to plain secure write
+        content = sanitize_string(content, "utf-8")
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    # Set secure permissions
+    try:
+        os.chmod(abs_path, stat.S_IRUSR | stat.S_IWUSR)  # 600
+    except OSError:
+        pass
+
+
+def read_file_encrypted(relative_path: str, key: Optional[bytes] = None) -> Optional[str]:
+    """Read encrypted file. Returns None if decryption fails."""
+    import hashlib
+
+    abs_path = get_abs_path(relative_path)
+
+    if not os.path.exists(abs_path):
+        return None
+
+    with open(abs_path, "rb") as f:
+        data = f.read()
+
+    # Check if encrypted
+    if data.startswith(b"ENCRYPTED:"):
+        try:
+            from cryptography.fernet import Fernet
+            from python.helpers.runtime import get_persistent_id
+
+            if key is None:
+                machine_id = get_persistent_id()
+                key = base64.urlsafe_b64encode(hashlib.sha256(machine_id.encode()).digest())
+
+            fernet = Fernet(key)
+            decrypted = fernet.decrypt(data[10:])  # Skip "ENCRYPTED:" prefix
+            return decrypted.decode('utf-8')
+        except Exception:
+            return None  # Decryption failed
+    else:
+        # Plain text file
+        return data.decode('utf-8')
 
 
 def write_file_bin(relative_path: str, content: bytes):

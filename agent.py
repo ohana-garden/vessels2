@@ -14,6 +14,7 @@ import models
 from python.helpers import extract_tools, files, errors, history, tokens, context as context_helper
 from python.helpers import dirty_json
 from python.helpers.print_style import PrintStyle
+from python.helpers.guardians import guard_input, guard_tool, guard_agent
 
 from langchain_core.prompts import (
     ChatPromptTemplate,
@@ -612,19 +613,23 @@ class Agent:
     def hist_add_user_message(self, message: UserMessage, intervention: bool = False):
         self.history.new_topic()  # user message starts a new topic in history
 
+        # Guard user input before processing
+        guarded_message = guard_input(message.message, source="user_message")
+        guarded_attachments = [guard_input(a, source="attachment") for a in message.attachments]
+
         # load message template based on intervention
         if intervention:
             content = self.parse_prompt(
                 "fw.intervention.md",
-                message=message.message,
-                attachments=message.attachments,
+                message=guarded_message,
+                attachments=guarded_attachments,
                 system_message=message.system_message,
             )
         else:
             content = self.parse_prompt(
                 "fw.user_message.md",
-                message=message.message,
-                attachments=message.attachments,
+                message=guarded_message,
+                attachments=guarded_attachments,
                 system_message=message.system_message,
             )
 
@@ -647,9 +652,12 @@ class Agent:
         return self.hist_add_message(False, content=content)
 
     def hist_add_tool_result(self, tool_name: str, tool_result: str, **kwargs):
+        # Guard tool output before adding to history
+        guarded_result = guard_tool(tool_result, source=f"tool:{tool_name}")
+
         data = {
             "tool_name": tool_name,
-            "tool_result": tool_result,
+            "tool_result": guarded_result,
             **kwargs,
         }
         asyncio.run(self.call_extensions("hist_add_tool_result", data=data))

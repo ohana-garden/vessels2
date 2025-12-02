@@ -1,30 +1,14 @@
-services:
-  vessels:
-    container_name: vessels
-    build:
-      context: .
-      args:
-        BRANCH: ${BRANCH:-main}
-    volumes:
-      - ./vessels-data:/vessels
-    ports:
-      - "50080:80"
-    environment:
-      - FALKORDB_HOST=falkordb
-      - FALKORDB_PORT=6379
-      - FALKORDB_DATABASE=vessels
-      - TIGERBEETLE_HOST=tigerbeetle
-      - TIGERBEETLE_PORT=3000
-      - TIGERBEETLE_CLUSTER_ID=0
-    depends_on:
-      falkordb:
-        condition: service_healthy
-      tigerbeetle:
-        condition: service_started
+# Vessels Development Stack
+# Usage: docker compose up -d
+#
+# TODO [PRODUCTION]: Remove external port bindings before release.
+# FalkorDB (6379) and TigerBeetle (3000) are exposed for dev debugging only.
+# Production should use internal networking only or add authentication.
 
+services:
   falkordb:
     image: falkordb/falkordb:latest
-    container_name: falkordb
+    container_name: vessels-falkordb
     ports:
       - "6379:6379"
     volumes:
@@ -37,7 +21,7 @@ services:
 
   tigerbeetle:
     image: ghcr.io/tigerbeetle/tigerbeetle:latest
-    container_name: tigerbeetle
+    container_name: vessels-tigerbeetle
     ports:
       - "3000:3000"
     volumes:

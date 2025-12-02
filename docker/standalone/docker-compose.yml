@@ -1,0 +1,30 @@
+# Vessels All-in-One Container
+# For Windows 11 Docker Desktop
+#
+# Usage:
+#   docker compose up -d
+#   Open http://localhost:8080
+
+services:
+  vessels:
+    build:
+      context: ../..
+      dockerfile: docker/standalone/Dockerfile
+    container_name: vessels
+    ports:
+      - "8080:80"
+    volumes:
+      - vessels-data:/data/falkordb
+      - vessels-tb:/data/tigerbeetle
+      - vessels-work:/vessels/work_dir
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GRAPHITI_LLM_PROVIDER=${GRAPHITI_LLM_PROVIDER:-openai}
+      - GRAPHITI_LLM_MODEL=${GRAPHITI_LLM_MODEL:-gpt-4o-mini}
+    restart: unless-stopped
+
+volumes:
+  vessels-data:
+  vessels-tb:
+  vessels-work:

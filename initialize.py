@@ -125,6 +125,17 @@ def initialize_chats():
         persist_chat.load_tmp_chats()
     return defer.DeferredTask().start_task(initialize_chats_async)
 
+def initialize_content_cache():
+    """Initialize content cache from FalkorDB."""
+    async def initialize_content_cache_async():
+        from python.helpers.files import get_content_cache
+        cache = get_content_cache()
+        count = await cache.load_from_db()
+        if count > 0:
+            PrintStyle.standard(f"Loaded {count} content items from FalkorDB")
+        return count
+    return defer.DeferredTask().start_task(initialize_content_cache_async)
+
 def initialize_mcp():
     set = settings.get_settings()
     async def initialize_mcp_async():
