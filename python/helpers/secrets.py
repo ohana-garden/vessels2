@@ -191,13 +191,13 @@ class SecretsManager:
         return combined
 
     def _write_secrets_raw(self, content: str):
-        """Write raw secrets content - writes to FalkorDB and filesystem backup."""
+        """Write raw secrets content - FalkorDB only (no filesystem backup for security)."""
         if len(self._files) != 1:
             raise RuntimeError(
                 "Saving secrets content is only supported for a single secrets file"
             )
 
-        # Write to FalkorDB
+        # Write to FalkorDB only (no filesystem backup for security)
         try:
             import asyncio
             from python.helpers.graph_store import get_graph_store
@@ -213,10 +213,8 @@ class SecretsManager:
             except RuntimeError:
                 asyncio.run(_save_to_db())
         except Exception:
-            pass  # FalkorDB not available, file backup will be used
-
-        # Also write to filesystem as backup
-        files.write_file(self._files[0], content)
+            # Fallback to file ONLY if DB is unavailable (not as backup)
+            files.write_file(self._files[0], content)
 
     def load_secrets(self) -> Dict[str, str]:
         """Load secrets from file, return key-value dict"""

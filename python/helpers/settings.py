@@ -1441,7 +1441,7 @@ def _write_settings_file(settings: Settings):
     _write_sensitive_settings(settings)
     _remove_sensitive_settings(settings)
 
-    # Write to FalkorDB
+    # Write to FalkorDB only (no filesystem backup for security)
     try:
         import asyncio
         from python.helpers.graph_store import get_graph_store
@@ -1458,10 +1458,9 @@ def _write_settings_file(settings: Settings):
             asyncio.run(_save_to_db())
     except Exception as e:
         PrintStyle.error(f"Failed to save settings to FalkorDB: {e}")
-
-    # Also write to file as backup
-    content = json.dumps(settings, indent=4)
-    files.write_file(SETTINGS_FILE, content)
+        # Fallback to file ONLY if DB is unavailable (not as backup)
+        content = json.dumps(settings, indent=4)
+        files.write_file(SETTINGS_FILE, content)
 
 
 def _remove_sensitive_settings(settings: Settings):
