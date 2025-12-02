@@ -551,6 +551,56 @@ class GraphStore:
             return False
 
     # =========================================================================
+    # Secrets Operations (replaces secrets.py file storage)
+    # =========================================================================
+
+    async def save_secrets(self, content: str) -> None:
+        """Save secrets content (raw .env format) to the graph."""
+        secrets_data = json.dumps({
+            "content": content,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Upsert - delete old and insert new
+        await self.delete_secrets()
+
+        await self._graphiti.add_episode(
+            name="secrets_store",
+            episode_body=secrets_data,
+            source=EpisodeType.json,
+            reference_time=datetime.now(timezone.utc),
+            group_id="secrets",
+        )
+
+    async def load_secrets(self) -> Optional[str]:
+        """Load secrets content from the graph. Returns raw .env format string."""
+        query = """
+        MATCH (n:Episode) WHERE n.name = 'secrets_store'
+        RETURN n.content as content
+        """
+        result = await self._driver.execute_query(query)
+
+        if result and len(result) > 0:
+            try:
+                data = json.loads(result[0].get("content", "{}"))
+                return data.get("content")
+            except Exception:
+                pass
+        return None
+
+    async def delete_secrets(self) -> bool:
+        """Delete secrets from the graph."""
+        query = """
+        MATCH (n:Episode) WHERE n.name = 'secrets_store'
+        DETACH DELETE n
+        """
+        try:
+            await self._driver.execute_query(query)
+            return True
+        except Exception:
+            return False
+
+    # =========================================================================
     # Knowledge Operations (replaces knowledge_import.py)
     # =========================================================================
 

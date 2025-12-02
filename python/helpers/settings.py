@@ -1405,10 +1405,35 @@ def _adjust_to_version(settings: Settings, default: Settings):
 
 
 def _read_settings_file() -> Settings | None:
+    # Try FalkorDB first
+    try:
+        import asyncio
+        from python.helpers.graph_store import get_graph_store
+
+        async def _load_from_db():
+            store = await get_graph_store()
+            return await store.load_setting("app_settings")
+
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_running():
+                db_settings = asyncio.run(_load_from_db())
+                if db_settings:
+                    return normalize_settings(db_settings)
+        except RuntimeError:
+            db_settings = asyncio.run(_load_from_db())
+            if db_settings:
+                return normalize_settings(db_settings)
+    except Exception:
+        pass  # FalkorDB not available, try file
+
+    # Fallback to file
     if os.path.exists(SETTINGS_FILE):
         content = files.read_file(SETTINGS_FILE)
         parsed = json.loads(content)
         return normalize_settings(parsed)
+
+    return None
 
 
 def _write_settings_file(settings: Settings):
@@ -1416,7 +1441,25 @@ def _write_settings_file(settings: Settings):
     _write_sensitive_settings(settings)
     _remove_sensitive_settings(settings)
 
-    # write settings
+    # Write to FalkorDB
+    try:
+        import asyncio
+        from python.helpers.graph_store import get_graph_store
+
+        async def _save_to_db():
+            store = await get_graph_store()
+            await store.save_setting("app_settings", dict(settings), "config")
+
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_running():
+                asyncio.run(_save_to_db())
+        except RuntimeError:
+            asyncio.run(_save_to_db())
+    except Exception as e:
+        PrintStyle.error(f"Failed to save settings to FalkorDB: {e}")
+
+    # Also write to file as backup
     content = json.dumps(settings, indent=4)
     files.write_file(SETTINGS_FILE, content)
 
