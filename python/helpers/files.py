@@ -318,25 +318,104 @@ def read_file_base64(relative_path):
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+# =============================================================================
+# Template Security - Prevents prompt injection via template placeholders
+# =============================================================================
+
+class TrustedString(str):
+    """
+    Marker class for strings that are system-generated and trusted.
+    These will NOT be escaped when used in template substitution.
+    Use for internal system values only, never for user input.
+    """
+    pass
+
+
+def trusted(value: str) -> TrustedString:
+    """Mark a string as trusted (system-generated). Will not be escaped in templates."""
+    return TrustedString(value)
+
+
+def escape_template_delimiters(text: str) -> str:
+    """
+    Escape template delimiters in untrusted input to prevent prompt injection.
+    Converts {{ to { { and }} to } } (with zero-width space).
+    This neutralizes any injection attempts while preserving readability.
+    """
+    if not isinstance(text, str):
+        return text
+    # Use Unicode zero-width space (U+200B) to break delimiter sequences
+    # This is invisible but prevents template evaluation
+    return text.replace("{{", "{\u200b{").replace("}}", "}\u200b}")
+
+
+def _prepare_template_value(value: Any, for_json: bool = False) -> str:
+    """
+    Prepare a value for template substitution.
+    - TrustedString values are used as-is (system-generated)
+    - All other values are escaped to prevent injection
+    """
+    if isinstance(value, TrustedString):
+        # Trusted system value - no escaping
+        return json.dumps(str(value)) if for_json else str(value)
+
+    if for_json:
+        # For JSON templates, escape the string value, then JSON encode
+        if isinstance(value, str):
+            escaped = escape_template_delimiters(value)
+            return json.dumps(escaped)
+        elif isinstance(value, (dict, list)):
+            # Recursively escape strings in complex structures
+            escaped = _escape_structure(value)
+            return json.dumps(escaped)
+        else:
+            return json.dumps(value)
+    else:
+        # For text templates, escape and convert to string
+        strval = str(value)
+        return escape_template_delimiters(strval)
+
+
+def _escape_structure(obj: Any) -> Any:
+    """Recursively escape template delimiters in nested structures."""
+    if isinstance(obj, TrustedString):
+        return str(obj)
+    elif isinstance(obj, str):
+        return escape_template_delimiters(obj)
+    elif isinstance(obj, dict):
+        return {k: _escape_structure(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_escape_structure(item) for item in obj]
+    else:
+        return obj
+
+
 def replace_placeholders_text(_content: str, **kwargs):
-    # Replace placeholders with values from kwargs
+    """
+    Replace placeholders with values from kwargs.
+    All values are escaped unless marked as TrustedString.
+    """
     for key, value in kwargs.items():
         placeholder = "{{" + key + "}}"
-        strval = str(value)
+        strval = _prepare_template_value(value, for_json=False)
         _content = _content.replace(placeholder, strval)
     return _content
 
 
 def replace_placeholders_json(_content: str, **kwargs):
-    # Replace placeholders with values from kwargs
+    """
+    Replace placeholders with JSON-encoded values from kwargs.
+    All values are escaped unless marked as TrustedString.
+    """
     for key, value in kwargs.items():
         placeholder = "{{" + key + "}}"
-        strval = json.dumps(value)
+        strval = _prepare_template_value(value, for_json=True)
         _content = _content.replace(placeholder, strval)
     return _content
 
 
 def replace_placeholders_dict(_content: dict, **kwargs):
+    """Replace placeholders in dict structure. Values are escaped unless trusted."""
     def replace_value(value):
         if isinstance(value, str):
             placeholders = re.findall(r"{{(\w+)}}", value)
@@ -345,14 +424,19 @@ def replace_placeholders_dict(_content: dict, **kwargs):
                     if placeholder in kwargs:
                         replacement = kwargs[placeholder]
                         if value == f"{{{{{placeholder}}}}}":
-                            return replacement
+                            # Full replacement - escape if needed
+                            if isinstance(replacement, TrustedString):
+                                return str(replacement)
+                            return _escape_structure(replacement)
                         elif isinstance(replacement, (dict, list)):
+                            escaped = _escape_structure(replacement)
                             value = value.replace(
-                                f"{{{{{placeholder}}}}}", json.dumps(replacement)
+                                f"{{{{{placeholder}}}}}", json.dumps(escaped)
                             )
                         else:
+                            escaped = _prepare_template_value(replacement, for_json=False)
                             value = value.replace(
-                                f"{{{{{placeholder}}}}}", str(replacement)
+                                f"{{{{{placeholder}}}}}", escaped
                             )
             return value
         elif isinstance(value, dict):
