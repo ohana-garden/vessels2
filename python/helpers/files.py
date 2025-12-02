@@ -449,6 +449,118 @@ def write_file(relative_path: str, content: str, encoding: str = "utf-8"):
         f.write(content)
 
 
+def write_file_secure(relative_path: str, content: str, encoding: str = "utf-8"):
+    """Write file with secure permissions (600) - owner read/write only.
+    Use for sensitive files like settings and secrets fallbacks."""
+    import stat
+
+    abs_path = get_abs_path(relative_path)
+    dir_path = os.path.dirname(abs_path)
+
+    # Create directory with secure permissions (700)
+    os.makedirs(dir_path, exist_ok=True)
+    try:
+        os.chmod(dir_path, stat.S_IRWXU)  # 700 - owner only
+    except OSError:
+        pass  # May fail on some filesystems
+
+    content = sanitize_string(content, encoding)
+
+    # Write file
+    with open(abs_path, "w", encoding=encoding) as f:
+        f.write(content)
+
+    # Set secure permissions (600) - owner read/write only
+    try:
+        os.chmod(abs_path, stat.S_IRUSR | stat.S_IWUSR)  # 600
+    except OSError:
+        pass  # May fail on some filesystems
+
+
+def write_file_encrypted(relative_path: str, content: str, key: Optional[bytes] = None):
+    """Write file with encryption. Falls back to secure write if encryption unavailable.
+    Use for highly sensitive files."""
+    import stat
+    import hashlib
+
+    abs_path = get_abs_path(relative_path)
+    dir_path = os.path.dirname(abs_path)
+
+    # Create directory with secure permissions
+    os.makedirs(dir_path, exist_ok=True)
+    try:
+        os.chmod(dir_path, stat.S_IRWXU)  # 700
+    except OSError:
+        pass
+
+    # Try to encrypt
+    encrypted = False
+    try:
+        from cryptography.fernet import Fernet
+
+        # Generate or use provided key
+        if key is None:
+            # Derive key from machine-specific data
+            from python.helpers.runtime import get_persistent_id
+            machine_id = get_persistent_id()
+            key = base64.urlsafe_b64encode(hashlib.sha256(machine_id.encode()).digest())
+
+        fernet = Fernet(key)
+        encrypted_content = fernet.encrypt(content.encode('utf-8'))
+
+        with open(abs_path, "wb") as f:
+            f.write(b"ENCRYPTED:" + encrypted_content)
+        encrypted = True
+    except ImportError:
+        pass  # cryptography not available
+    except Exception:
+        pass  # encryption failed
+
+    if not encrypted:
+        # Fallback to plain secure write
+        content = sanitize_string(content, "utf-8")
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    # Set secure permissions
+    try:
+        os.chmod(abs_path, stat.S_IRUSR | stat.S_IWUSR)  # 600
+    except OSError:
+        pass
+
+
+def read_file_encrypted(relative_path: str, key: Optional[bytes] = None) -> Optional[str]:
+    """Read encrypted file. Returns None if decryption fails."""
+    import hashlib
+
+    abs_path = get_abs_path(relative_path)
+
+    if not os.path.exists(abs_path):
+        return None
+
+    with open(abs_path, "rb") as f:
+        data = f.read()
+
+    # Check if encrypted
+    if data.startswith(b"ENCRYPTED:"):
+        try:
+            from cryptography.fernet import Fernet
+            from python.helpers.runtime import get_persistent_id
+
+            if key is None:
+                machine_id = get_persistent_id()
+                key = base64.urlsafe_b64encode(hashlib.sha256(machine_id.encode()).digest())
+
+            fernet = Fernet(key)
+            decrypted = fernet.decrypt(data[10:])  # Skip "ENCRYPTED:" prefix
+            return decrypted.decode('utf-8')
+        except Exception:
+            return None  # Decryption failed
+    else:
+        # Plain text file
+        return data.decode('utf-8')
+
+
 def write_file_bin(relative_path: str, content: bytes):
     abs_path = get_abs_path(relative_path)
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)

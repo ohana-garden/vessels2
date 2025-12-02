@@ -1458,9 +1458,9 @@ def _write_settings_file(settings: Settings):
             asyncio.run(_save_to_db())
     except Exception as e:
         PrintStyle.error(f"Failed to save settings to FalkorDB: {e}")
-        # Fallback to file ONLY if DB is unavailable (not as backup)
+        # Fallback to encrypted file ONLY if DB is unavailable
         content = json.dumps(settings, indent=4)
-        files.write_file(SETTINGS_FILE, content)
+        files.write_file_encrypted(SETTINGS_FILE, content)
 
 
 def _remove_sensitive_settings(settings: Settings):

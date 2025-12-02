@@ -173,13 +173,16 @@ class SecretsManager:
         except Exception:
             pass  # FalkorDB not available, try files
 
-        # Fallback to filesystem
+        # Fallback to filesystem (supports encrypted files)
         parts: List[str] = []
         self._raw_snapshots = {}
 
         for path in self._files:
             try:
-                content = files.read_file(path)
+                # Try encrypted read first, falls back to plain text
+                content = files.read_file_encrypted(path)
+                if content is None:
+                    content = files.read_file(path)
             except Exception:
                 content = ""
 
@@ -213,8 +216,8 @@ class SecretsManager:
             except RuntimeError:
                 asyncio.run(_save_to_db())
         except Exception:
-            # Fallback to file ONLY if DB is unavailable (not as backup)
-            files.write_file(self._files[0], content)
+            # Fallback to encrypted file ONLY if DB is unavailable (not as backup)
+            files.write_file_encrypted(self._files[0], content)
 
     def load_secrets(self) -> Dict[str, str]:
         """Load secrets from file, return key-value dict"""
