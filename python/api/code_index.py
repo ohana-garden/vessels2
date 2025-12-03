@@ -2,7 +2,7 @@
 A0 API - Code Management
 
 API endpoints for managing code stored in FalkorDB.
-Supports bootstrap (loading from filesystem) and runtime operations.
+All code lives in the database - no filesystem dependency.
 """
 
 from python.helpers.api import ApiHandler, Request
@@ -19,9 +19,7 @@ class CodeIndex(ApiHandler):
     async def process(self, input: dict, request: Request) -> dict:
         operation = input.get("operation", "status")
 
-        if operation == "bootstrap":
-            return await self._bootstrap(input.get("directories"))
-        elif operation == "store":
+        if operation == "store":
             return await self._store(input)
         elif operation == "get":
             return await self._get(input.get("path", ""))
@@ -34,13 +32,7 @@ class CodeIndex(ApiHandler):
         elif operation == "status":
             return await self._status()
         else:
-            return {"error": f"Unknown operation: {operation}. Use: bootstrap, store, get, delete, search, list, status"}
-
-    async def _bootstrap(self, directories: list[str] | None) -> dict:
-        """Bootstrap: Load all code from filesystem into FalkorDB."""
-        loader = await CodeLoader.get()
-        count = await loader.bootstrap_from_filesystem(directories)
-        return {"status": "ok", "loaded": count, "message": "Bootstrap complete - code loaded from filesystem to FalkorDB"}
+            return {"error": f"Unknown operation: {operation}. Use: store, get, delete, search, list, status"}
 
     async def _store(self, input: dict) -> dict:
         """Store code in FalkorDB."""
