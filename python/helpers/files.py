@@ -23,10 +23,17 @@ import threading
 # Content Cache - Loads content from FalkorDB for DB-first file reading
 # =============================================================================
 
+# Import embedded defaults for prompts
+from python.helpers.embedded_defaults import get_prompt_defaults
+
+_PROMPT_DEFAULTS = get_prompt_defaults()
+
+
 class ContentCache:
     """
     Cache for file content loaded from FalkorDB.
     DB only - no filesystem fallback. FalkorDB required.
+    Falls back to embedded defaults for prompts if not in DB.
     """
 
     _instance: Optional["ContentCache"] = None
@@ -68,7 +75,7 @@ class ContentCache:
             self._loaded = True
             return len(content_map)
         except Exception:
-            # DB not available, use filesystem
+            # DB not available - this is an error in DB-only mode
             self._loaded = False
             return 0
 
@@ -109,6 +116,14 @@ class ContentCache:
             self._cache[path] = content
             return content
 
+        # Fall back to embedded defaults for prompts
+        content = self._get_from_defaults(path)
+        if content is not None:
+            self._cache[path] = content
+            # Also seed to DB for persistence
+            self._seed_to_db(path, content)
+            return content
+
         return None
 
     def _load_single_from_db(self, path: str) -> Optional[str]:
@@ -123,17 +138,50 @@ class ContentCache:
         except Exception:
             return None
 
+    def _get_from_defaults(self, path: str) -> Optional[str]:
+        """Get content from embedded defaults."""
+        # Try exact path match for prompts
+        if path in _PROMPT_DEFAULTS:
+            return _PROMPT_DEFAULTS[path]
+
+        # Try with prompts/ prefix removed
+        if path.startswith("prompts/"):
+            key = path[8:]  # Remove "prompts/" prefix
+            if key in _PROMPT_DEFAULTS:
+                return _PROMPT_DEFAULTS[key]
+
+        # Try filename only (for backward compatibility)
+        filename = os.path.basename(path)
+        if filename in _PROMPT_DEFAULTS:
+            return _PROMPT_DEFAULTS[filename]
+
+        return None
+
+    def _seed_to_db(self, path: str, content: str) -> None:
+        """Seed content to DB for persistence (fire and forget)."""
+        try:
+            from python.helpers.graph_store import get_graph_store
+            loop = asyncio.new_event_loop()
+            store = loop.run_until_complete(get_graph_store())
+            loop.run_until_complete(store.save_content(path, content, content_type="prompt"))
+            loop.close()
+        except Exception:
+            pass  # Non-critical, content still available from defaults
+
     def set(self, path: str, content: str) -> None:
         """Set content in cache."""
         path = path.replace("\\", "/").lstrip("/")
         self._cache[path] = content
 
     def has(self, path: str) -> bool:
-        """Check if path exists in cache."""
+        """Check if path exists in cache or defaults."""
         if not self._enabled:
             return False
         path = path.replace("\\", "/").lstrip("/")
-        return path in self._cache
+        if path in self._cache:
+            return True
+        # Check embedded defaults
+        return self._get_from_defaults(path) is not None
 
     def clear(self) -> None:
         """Clear the cache."""
