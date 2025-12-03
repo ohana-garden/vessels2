@@ -1,20 +1,13 @@
 """
 Code Registry - Graph-native code storage and execution for Vessels.
 
-This module provides a system for storing Python code in the graph database
-and loading/executing it dynamically at runtime. This enables the A0 paradigm:
-"no files, code in DB, agents instead of imports."
+Code lives in the graph database. On first access, defaults are seeded.
+No startup initialization required - lazy loading handles everything.
 
 Usage:
-    # Register code in the graph
-    await registry.register("moral_geometry", code_string, code_type="module")
-
-    # Load and use code from graph
+    # Load code (auto-seeds from defaults if not in DB)
     module = await registry.load("moral_geometry")
     vector = module.MoralVector()
-
-    # Or get a specific class
-    MoralVector = await registry.get_class("moral_geometry", "MoralVector")
 """
 
 import asyncio
@@ -28,61 +21,175 @@ from dataclasses import dataclass, field
 T = TypeVar('T')
 
 
+# =============================================================================
+# Embedded Code Defaults (seeded to DB on first access)
+# =============================================================================
+
+_DEFAULTS = {
+    "moral_geometry": {
+        "code_type": "module",
+        "code": '''
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+import math
+
+class MoralDimension(str, Enum):
+    HARM_BENEFIT = "harm_benefit"
+    INDIVIDUAL_COLLECTIVE = "individual_collective"
+    SHORT_LONG_TERM = "short_long_term"
+    AUTONOMY = "autonomy"
+    JUSTICE = "justice"
+    FIDELITY = "fidelity"
+    TRUTH = "truth"
+    COMPASSION = "compassion"
+    COURAGE = "courage"
+    PRUDENCE = "prudence"
+    TEMPERANCE = "temperance"
+    RECIPROCITY = "reciprocity"
+    SANCTITY = "sanctity"
+    AUTHORITY = "authority"
+    LIBERTY = "liberty"
+
+    @classmethod
+    def all_dimensions(cls): return [d.value for d in cls]
+
+@dataclass
+class MoralVector:
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    components: dict = field(default_factory=dict)
+    source_type: str = "action"
+    timestamp: str = ""
+    magnitude: float = 0.0
+    dominant_dimension: str = ""
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+        if not self.components:
+            self.components = {d.value: 0.0 for d in MoralDimension}
+
+    def set_dimension(self, dim, value):
+        key = dim.value if hasattr(dim, "value") else dim
+        self.components[key] = max(-1.0, min(1.0, float(value)))
+        return self
+
+    def get_dimension(self, dim):
+        key = dim.value if hasattr(dim, "value") else dim
+        return self.components.get(key, 0.0)
+
+    def compute_magnitude(self):
+        self.magnitude = math.sqrt(sum(v*v for v in self.components.values()))
+        return self.magnitude
+
+    def find_dominant(self):
+        if self.components:
+            self.dominant_dimension = max(self.components, key=lambda k: abs(self.components[k]))
+        return self.dominant_dimension
+
+    def to_dict(self):
+        return {"id": self.id, "name": self.name, "components": self.components,
+                "magnitude": self.magnitude, "dominant_dimension": self.dominant_dimension}
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(id=d.get("id",""), name=d.get("name",""), components=d.get("components",{}))
+
+@dataclass
+class MoralDistance:
+    euclidean: float = 0.0
+    cosine_similarity: float = 0.0
+    alignment_score: float = 0.0
+    conflict_dimensions: list = field(default_factory=list)
+
+def compute_distance(a, b):
+    ca = a.components if hasattr(a, "components") else a.get("components", {})
+    cb = b.components if hasattr(b, "components") else b.get("components", {})
+    dims = set(ca) | set(cb)
+    sum_sq = sum((ca.get(d,0) - cb.get(d,0))**2 for d in dims)
+    dot = sum(ca.get(d,0) * cb.get(d,0) for d in dims)
+    ma = math.sqrt(sum(v*v for v in ca.values()))
+    mb = math.sqrt(sum(v*v for v in cb.values()))
+    cos = dot/(ma*mb) if ma and mb else 0
+    conflicts = [d for d in dims if ca.get(d,0) * cb.get(d,0) < -0.25]
+    return MoralDistance(euclidean=math.sqrt(sum_sq), cosine_similarity=cos,
+                         alignment_score=(cos+1)/2, conflict_dimensions=conflicts)
+''',
+    },
+    "spectral": {
+        "code_type": "agent_capability",
+        "code": '''
+import math
+
+def eigenvalues(matrix, n=5, iters=100):
+    """Power iteration eigenvalue decomposition (no numpy)."""
+    size = len(matrix)
+    if not size: return {"eigenvalues": [], "eigenvectors": []}
+    A = [row[:] for row in matrix]
+    vals, vecs = [], []
+    for _ in range(min(n, size)):
+        v = [1/math.sqrt(size)] * size
+        ev = 0
+        for _ in range(iters):
+            Av = [sum(A[i][j]*v[j] for j in range(size)) for i in range(size)]
+            ev = sum(v[i]*Av[i] for i in range(size))
+            norm = math.sqrt(sum(x*x for x in Av))
+            if norm < 1e-10: break
+            v = [x/norm for x in Av]
+        if abs(ev) < 1e-10: break
+        vals.append(ev)
+        vecs.append(v)
+        for i in range(size):
+            for j in range(size):
+                A[i][j] -= ev * v[i] * v[j]
+    return {"eigenvalues": vals, "eigenvectors": vecs}
+
+def covariance(data):
+    if not data or not data[0]: return []
+    n, m = len(data), len(data[0])
+    means = [sum(data[i][j] for i in range(n))/n for j in range(m)]
+    return [[sum((data[k][i]-means[i])*(data[k][j]-means[j]) for k in range(n))/(n-1 if n>1 else 1)
+             for j in range(m)] for i in range(m)]
+
+def pca(data, components=2):
+    cov = covariance(data)
+    result = eigenvalues(cov, components)
+    total = sum(result["eigenvalues"]) or 1
+    return {"components": result["eigenvectors"][:components],
+            "variance_explained": [e/total for e in result["eigenvalues"][:components]]}
+''',
+    },
+}
+
+
 @dataclass
 class CodeEntry:
-    """A code entry in the registry."""
     name: str
     code: str
-    code_type: str  # module, tool, extension, agent_capability
+    code_type: str = "module"
     version: str = ""
     dependencies: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
-    created_at: str = ""
-    updated_at: str = ""
 
     def __post_init__(self):
-        now = datetime.now(timezone.utc).isoformat()
-        if not self.created_at:
-            self.created_at = now
-        if not self.updated_at:
-            self.updated_at = now
         if not self.version:
-            # Generate version from code hash
             self.version = hashlib.sha256(self.code.encode()).hexdigest()[:12]
 
     def to_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "code": self.code,
-            "code_type": self.code_type,
-            "version": self.version,
-            "dependencies": self.dependencies,
-            "metadata": self.metadata,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-        }
+        return {"name": self.name, "code": self.code, "code_type": self.code_type,
+                "version": self.version, "dependencies": self.dependencies, "metadata": self.metadata}
 
     @classmethod
     def from_dict(cls, data: dict) -> "CodeEntry":
-        return cls(
-            name=data.get("name", ""),
-            code=data.get("code", ""),
-            code_type=data.get("code_type", "module"),
-            version=data.get("version", ""),
-            dependencies=data.get("dependencies", []),
-            metadata=data.get("metadata", {}),
-            created_at=data.get("created_at", ""),
-            updated_at=data.get("updated_at", ""),
-        )
+        return cls(name=data.get("name", ""), code=data.get("code", ""),
+                   code_type=data.get("code_type", "module"), version=data.get("version", ""),
+                   dependencies=data.get("dependencies", []), metadata=data.get("metadata", {}))
 
 
 class CodeRegistry:
-    """
-    Graph-native code registry for dynamic code loading.
-
-    Stores Python code in the graph database and provides
-    mechanisms to load and execute it at runtime.
-    """
+    """Graph-native code registry. Auto-seeds defaults on first access."""
 
     _instance: Optional["CodeRegistry"] = None
     _lock = asyncio.Lock()
@@ -94,171 +201,56 @@ class CodeRegistry:
 
     @classmethod
     async def get_instance(cls) -> "CodeRegistry":
-        """Get or create the singleton registry instance."""
         async with cls._lock:
             if cls._instance is None:
                 cls._instance = cls()
             return cls._instance
 
     async def _get_store(self):
-        """Get the graph store instance."""
         if self._store is None:
             from python.helpers.graph_store import get_graph_store
             self._store = await get_graph_store()
         return self._store
 
-    # =========================================================================
-    # Registration (storing code in graph)
-    # =========================================================================
-
-    async def register(
-        self,
-        name: str,
-        code: str,
-        code_type: str = "module",
-        dependencies: list[str] = None,
-        metadata: dict = None,
-    ) -> str:
-        """
-        Register code in the graph database.
-
-        Args:
-            name: Unique name for this code module
-            code: Python source code as string
-            code_type: Type of code (module, tool, extension, agent_capability)
-            dependencies: List of other registry entries this depends on
-            metadata: Additional metadata
-
-        Returns:
-            Version hash of the registered code
-        """
-        entry = CodeEntry(
-            name=name,
-            code=code,
-            code_type=code_type,
-            dependencies=dependencies or [],
-            metadata=metadata or {},
-        )
-
+    async def register(self, name: str, code: str, code_type: str = "module",
+                       dependencies: list[str] = None, metadata: dict = None) -> str:
+        entry = CodeEntry(name=name, code=code, code_type=code_type,
+                          dependencies=dependencies or [], metadata=metadata or {})
         store = await self._get_store()
-
-        content = json.dumps({
-            "type": "code_registry",
-            "entry": entry.to_dict(),
-        })
-
-        await store.save_content(
-            f"code/{code_type}/{name}",
-            content,
-            content_type="code"
-        )
-
-        # Update local cache entry
+        content = json.dumps({"type": "code_registry", "entry": entry.to_dict()})
+        await store.save_content(f"code/{code_type}/{name}", content, content_type="code")
         self._entries[name] = entry
-
-        # Invalidate module cache if exists
-        if name in self._cache:
-            del self._cache[name]
-
+        self._cache.pop(name, None)
         return entry.version
 
-    async def register_tool(
-        self,
-        name: str,
-        code: str,
-        description: str = "",
-        methods: list[str] = None,
-    ) -> str:
-        """Register a tool class in the graph."""
-        return await self.register(
-            name=name,
-            code=code,
-            code_type="tool",
-            metadata={
-                "description": description,
-                "methods": methods or [],
-            }
-        )
-
-    async def register_extension(
-        self,
-        name: str,
-        code: str,
-        extension_point: str,
-        priority: int = 50,
-    ) -> str:
-        """Register an extension in the graph."""
-        return await self.register(
-            name=name,
-            code=code,
-            code_type="extension",
-            metadata={
-                "extension_point": extension_point,
-                "priority": priority,
-            }
-        )
-
-    async def register_agent_capability(
-        self,
-        name: str,
-        code: str,
-        capability_type: str,
-        description: str = "",
-    ) -> str:
-        """
-        Register an agent capability (replaces imports).
-
-        Instead of `import numpy`, an agent provides the capability.
-        """
-        return await self.register(
-            name=name,
-            code=code,
-            code_type="agent_capability",
-            metadata={
-                "capability_type": capability_type,
-                "description": description,
-            }
-        )
-
-    # =========================================================================
-    # Loading (retrieving and executing code from graph)
-    # =========================================================================
-
     async def load(self, name: str) -> Optional[types.ModuleType]:
-        """
-        Load a code module from the graph.
-
-        Returns a Python module object with the code executed.
-        """
-        # Check cache first
+        """Load module from graph. Seeds from defaults if missing."""
         if name in self._cache:
             return self._cache[name]
 
-        # Load entry from graph
         entry = await self._load_entry(name)
+
+        # Auto-seed from defaults if not in DB
+        if entry is None and name in _DEFAULTS:
+            default = _DEFAULTS[name]
+            await self.register(name, default["code"], default.get("code_type", "module"))
+            entry = await self._load_entry(name)
+
         if entry is None:
             return None
 
-        # Load dependencies first
         for dep in entry.dependencies:
             await self.load(dep)
 
-        # Compile and execute code
-        module = self._compile_module(name, entry.code)
-
-        # Cache the module
+        module = self._compile(name, entry.code)
         self._cache[name] = module
-
         return module
 
     async def _load_entry(self, name: str) -> Optional[CodeEntry]:
-        """Load a code entry from the graph."""
         if name in self._entries:
             return self._entries[name]
 
         store = await self._get_store()
-
-        # Try different code types
         for code_type in ["module", "tool", "extension", "agent_capability"]:
             content = await store.get_content(f"code/{code_type}/{name}")
             if content:
@@ -270,228 +262,46 @@ class CodeRegistry:
                         return entry
                 except json.JSONDecodeError:
                     pass
-
         return None
 
-    def _compile_module(self, name: str, code: str) -> types.ModuleType:
-        """Compile code string into a module object."""
-        # Create a new module
+    def _compile(self, name: str, code: str) -> types.ModuleType:
         module = types.ModuleType(name)
         module.__dict__["__name__"] = name
-        module.__dict__["__file__"] = f"<graph:{name}>"
-
-        # Provide common imports in module namespace
         module.__dict__["__builtins__"] = __builtins__
-
-        # Add access to other registry modules
         module.__dict__["__registry__"] = self
-
-        # Compile and execute code in module namespace
-        try:
-            compiled = compile(code, f"<graph:{name}>", "exec")
-            exec(compiled, module.__dict__)
-        except Exception as e:
-            from python.helpers.print_style import PrintStyle
-            PrintStyle.error(f"Failed to compile code '{name}': {e}")
-            raise
-
+        compiled = compile(code, f"<db:{name}>", "exec")
+        exec(compiled, module.__dict__)
         return module
 
-    async def get_class(
-        self,
-        module_name: str,
-        class_name: str,
-        base_class: Type[T] = None,
-    ) -> Optional[Type[T]]:
-        """
-        Get a specific class from a registered module.
-
-        Args:
-            module_name: Name of the registered module
-            class_name: Name of the class to retrieve
-            base_class: Optional base class for type checking
-
-        Returns:
-            The class if found, None otherwise
-        """
+    async def get_class(self, module_name: str, class_name: str) -> Optional[type]:
         module = await self.load(module_name)
-        if module is None:
-            return None
+        return getattr(module, class_name, None) if module else None
 
-        cls = getattr(module, class_name, None)
-
-        if cls is None:
-            return None
-
-        if base_class and not issubclass(cls, base_class):
-            return None
-
-        return cls
-
-    async def get_function(
-        self,
-        module_name: str,
-        function_name: str,
-    ) -> Optional[callable]:
-        """Get a specific function from a registered module."""
-        module = await self.load(module_name)
-        if module is None:
-            return None
-
-        func = getattr(module, function_name, None)
-
-        if func is None or not callable(func):
-            return None
-
-        return func
-
-    # =========================================================================
-    # Listing and Discovery
-    # =========================================================================
-
-    async def list_registered(
-        self,
-        code_type: Optional[str] = None,
-    ) -> list[str]:
-        """List all registered code entries."""
+    async def list_registered(self, code_type: str = None) -> list[str]:
         store = await self._get_store()
         paths = await store.list_content(content_type="code")
-
         names = []
         for path in paths:
             if path.startswith("code/"):
                 parts = path.split("/")
                 if len(parts) >= 3:
-                    entry_type = parts[1]
-                    entry_name = parts[2]
-                    if code_type is None or entry_type == code_type:
-                        names.append(entry_name)
-
+                    if code_type is None or parts[1] == code_type:
+                        names.append(parts[2])
         return names
 
-    async def list_tools(self) -> list[dict]:
-        """List all registered tools with metadata."""
-        store = await self._get_store()
-        paths = await store.list_content(content_type="code")
-
-        tools = []
-        for path in paths:
-            if path.startswith("code/tool/"):
-                name = path.split("/")[-1]
-                entry = await self._load_entry(name)
-                if entry:
-                    tools.append({
-                        "name": name,
-                        "description": entry.metadata.get("description", ""),
-                        "methods": entry.metadata.get("methods", []),
-                        "version": entry.version,
-                    })
-
-        return tools
-
-    async def list_extensions(self, extension_point: str = None) -> list[dict]:
-        """List all registered extensions."""
-        store = await self._get_store()
-        paths = await store.list_content(content_type="code")
-
-        extensions = []
-        for path in paths:
-            if path.startswith("code/extension/"):
-                name = path.split("/")[-1]
-                entry = await self._load_entry(name)
-                if entry:
-                    ep = entry.metadata.get("extension_point", "")
-                    if extension_point is None or ep == extension_point:
-                        extensions.append({
-                            "name": name,
-                            "extension_point": ep,
-                            "priority": entry.metadata.get("priority", 50),
-                            "version": entry.version,
-                        })
-
-        # Sort by priority
-        extensions.sort(key=lambda x: x["priority"])
-
-        return extensions
-
-    async def list_capabilities(self) -> list[dict]:
-        """List all registered agent capabilities."""
-        store = await self._get_store()
-        paths = await store.list_content(content_type="code")
-
-        capabilities = []
-        for path in paths:
-            if path.startswith("code/agent_capability/"):
-                name = path.split("/")[-1]
-                entry = await self._load_entry(name)
-                if entry:
-                    capabilities.append({
-                        "name": name,
-                        "capability_type": entry.metadata.get("capability_type", ""),
-                        "description": entry.metadata.get("description", ""),
-                        "version": entry.version,
-                    })
-
-        return capabilities
-
-    # =========================================================================
-    # Deletion
-    # =========================================================================
-
     async def unregister(self, name: str) -> bool:
-        """Remove code from the registry."""
         store = await self._get_store()
-
-        # Try to delete from all code types
-        deleted = False
         for code_type in ["module", "tool", "extension", "agent_capability"]:
             if await store.delete_content(f"code/{code_type}/{name}"):
-                deleted = True
-                break
+                self._cache.pop(name, None)
+                self._entries.pop(name, None)
+                return True
+        return False
 
-        # Clear from caches
-        if name in self._cache:
-            del self._cache[name]
-        if name in self._entries:
-            del self._entries[name]
-
-        return deleted
-
-    def clear_cache(self):
-        """Clear the module cache."""
-        self._cache.clear()
-
-
-# =============================================================================
-# Convenience Functions
-# =============================================================================
 
 async def get_registry() -> CodeRegistry:
-    """Get the code registry singleton."""
     return await CodeRegistry.get_instance()
 
-
-async def register_code(
-    name: str,
-    code: str,
-    code_type: str = "module",
-    **kwargs
-) -> str:
-    """Register code in the graph database."""
-    registry = await get_registry()
-    return await registry.register(name, code, code_type, **kwargs)
-
-
 async def load_code(name: str) -> Optional[types.ModuleType]:
-    """Load code from the graph database."""
     registry = await get_registry()
     return await registry.load(name)
-
-
-async def get_class_from_graph(
-    module_name: str,
-    class_name: str,
-) -> Optional[type]:
-    """Get a class from graph-stored code."""
-    registry = await get_registry()
-    return await registry.get_class(module_name, class_name)
