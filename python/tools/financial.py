@@ -1,156 +1,196 @@
-"""Financial Tool - TigerBeetle operations for Vessels."""
+"""Financial Tool - TigerBeetle operations for Vessels.
 
-import os
-import uuid
+Thin wrapper around ledger_store for agent tool access.
+"""
+
 from python.helpers.tool import Tool, Response
-
-try:
-    import tigerbeetle
-    TB_AVAILABLE = True
-except ImportError:
-    TB_AVAILABLE = False
-    tigerbeetle = None
-
-
-def _get_client():
-    """Get TigerBeetle client."""
-    if not TB_AVAILABLE:
-        return None
-    host = os.environ.get("TIGERBEETLE_HOST", "127.0.0.1")
-    port = int(os.environ.get("TIGERBEETLE_PORT", "3000"))
-    cluster_id = int(os.environ.get("TIGERBEETLE_CLUSTER_ID", "0"))
-    return tigerbeetle.Client(cluster_id, [f"{host}:{port}"])
+from python.helpers.ledger_store import (
+    get_ledger_store, ledger_available, AccountType,
+    LEDGER_DEFAULT, LEDGER_USD, LEDGER_EUR, LEDGER_GBP
+)
 
 
 class Financial(Tool):
-    """Double-entry bookkeeping operations."""
+    """Double-entry bookkeeping operations via TigerBeetle."""
 
     async def execute(self, operation: str = "", **kwargs) -> Response:
-        client = _get_client()
-        if not client:
+        if not ledger_available():
             return Response(message="TigerBeetle not available", break_loop=False)
+
+        store = await get_ledger_store()
+        if not store.available:
+            return Response(message="TigerBeetle connection failed", break_loop=False)
 
         try:
             if operation == "create_account":
-                return self._create_account(client, **kwargs)
+                return await self._create_account(store, **kwargs)
             elif operation == "transfer":
-                return self._transfer(client, **kwargs)
+                return await self._transfer(store, **kwargs)
             elif operation == "pending_transfer":
-                return self._pending_transfer(client, **kwargs)
+                return await self._pending_transfer(store, **kwargs)
             elif operation == "post_transfer":
-                return self._post_transfer(client, **kwargs)
+                return await self._post_transfer(store, **kwargs)
             elif operation == "void_transfer":
-                return self._void_transfer(client, **kwargs)
+                return await self._void_transfer(store, **kwargs)
             elif operation == "get_balance":
-                return self._get_balance(client, **kwargs)
+                return await self._get_balance(store, **kwargs)
             elif operation == "get_account":
-                return self._get_account(client, **kwargs)
+                return await self._get_account(store, **kwargs)
+            elif operation == "list_accounts":
+                return await self._list_accounts(store, **kwargs)
+            elif operation == "setup_chart":
+                return await self._setup_chart(store, **kwargs)
             else:
                 return Response(
-                    message=f"Unknown operation: {operation}. Use: create_account, transfer, pending_transfer, post_transfer, void_transfer, get_balance, get_account",
+                    message=f"Unknown operation: {operation}.\n\n"
+                    "Available operations:\n"
+                    "- create_account: Create named account\n"
+                    "- transfer: Immediate transfer between accounts\n"
+                    "- pending_transfer: Two-phase commit transfer\n"
+                    "- post_transfer: Commit pending transfer\n"
+                    "- void_transfer: Cancel pending transfer\n"
+                    "- get_balance: Get account balance\n"
+                    "- get_account: Get full account details\n"
+                    "- list_accounts: List all named accounts\n"
+                    "- setup_chart: Create chart of accounts",
                     break_loop=False
                 )
         except Exception as e:
             return Response(message=f"Financial error: {e}", break_loop=False)
 
-    def _create_account(self, client, ledger: int = 1, code: int = 0,
-                        account_type: str = "asset", no_overdraft: bool = False, **kwargs) -> Response:
-        account_id = uuid.uuid4().int
-        flags = 0
-        if no_overdraft:
-            flags |= tigerbeetle.AccountFlags.DEBITS_MUST_NOT_EXCEED_CREDITS
-        if account_type == "liability":
-            flags |= tigerbeetle.AccountFlags.CREDITS_MUST_NOT_EXCEED_DEBITS
+    async def _create_account(self, store, name: str = "", account_type: str = "asset",
+                              ledger: int = LEDGER_DEFAULT, code: int = None,
+                              description: str = "", no_overdraft: bool = False, **kwargs) -> Response:
+        if not name:
+            return Response(message="Account name required", break_loop=False)
 
-        account = tigerbeetle.Account(
-            id=account_id, debits_pending=0, debits_posted=0,
-            credits_pending=0, credits_posted=0, user_data_128=0,
-            user_data_64=0, user_data_32=0, ledger=ledger, code=code,
-            flags=flags, timestamp=0,
-        )
-        errors = client.create_accounts([account])
-        if errors:
-            return Response(message=f"Create failed: {errors[0].result}", break_loop=False)
-        return Response(message=f"Account created. ID: {account_id}", break_loop=False)
+        type_map = {
+            "asset": AccountType.ASSET,
+            "liability": AccountType.LIABILITY,
+            "equity": AccountType.EQUITY,
+            "revenue": AccountType.REVENUE,
+            "expense": AccountType.EXPENSE,
+        }
+        acc_type = type_map.get(account_type.lower(), AccountType.ASSET)
 
-    def _transfer(self, client, debit_account: int = 0, credit_account: int = 0,
-                  amount: int = 0, ledger: int = 1, code: int = 0, **kwargs) -> Response:
-        transfer_id = uuid.uuid4().int
-        xfer = tigerbeetle.Transfer(
-            id=transfer_id, debit_account_id=debit_account,
-            credit_account_id=credit_account, amount=amount,
-            pending_id=0, user_data_128=0, user_data_64=0, user_data_32=0,
-            timeout=0, ledger=ledger, code=code, flags=0, timestamp=0,
+        account_id = await store.create_account(
+            name=name,
+            account_type=acc_type,
+            ledger=ledger,
+            code=code,
+            description=description,
+            no_overdraft=no_overdraft
         )
-        errors = client.create_transfers([xfer])
-        if errors:
-            return Response(message=f"Transfer failed: {errors[0].result}", break_loop=False)
+
         return Response(
-            message=f"Transfer complete. ID: {transfer_id}\n{debit_account} -> {credit_account}: {amount}",
+            message=f"Account created.\n  Name: {name}\n  ID: {account_id}\n  Type: {account_type}\n  Ledger: {ledger}",
             break_loop=False
         )
 
-    def _pending_transfer(self, client, debit_account: int = 0, credit_account: int = 0,
-                          amount: int = 0, ledger: int = 1, code: int = 0,
-                          timeout: int = 0, **kwargs) -> Response:
-        transfer_id = uuid.uuid4().int
-        xfer = tigerbeetle.Transfer(
-            id=transfer_id, debit_account_id=debit_account,
-            credit_account_id=credit_account, amount=amount,
-            pending_id=0, user_data_128=0, user_data_64=0, user_data_32=0,
-            timeout=timeout, ledger=ledger, code=code,
-            flags=tigerbeetle.TransferFlags.PENDING, timestamp=0,
-        )
-        errors = client.create_transfers([xfer])
-        if errors:
-            return Response(message=f"Pending transfer failed: {errors[0].result}", break_loop=False)
+    async def _transfer(self, store, from_account: str = "", to_account: str = "",
+                        amount: int = 0, ledger: int = LEDGER_DEFAULT, code: int = 0, **kwargs) -> Response:
+        if not from_account or not to_account:
+            return Response(message="from_account and to_account required", break_loop=False)
+        if amount <= 0:
+            return Response(message="amount must be positive", break_loop=False)
+
+        result = await store.transfer(from_account, to_account, amount, ledger, code)
+
+        if result.success:
+            return Response(message=result.message, break_loop=False)
+        return Response(message=f"Transfer failed: {result.message}", break_loop=False)
+
+    async def _pending_transfer(self, store, from_account: str = "", to_account: str = "",
+                                amount: int = 0, timeout: int = 0, ledger: int = LEDGER_DEFAULT,
+                                code: int = 0, **kwargs) -> Response:
+        if not from_account or not to_account:
+            return Response(message="from_account and to_account required", break_loop=False)
+        if amount <= 0:
+            return Response(message="amount must be positive", break_loop=False)
+
+        result = await store.transfer_pending(from_account, to_account, amount, timeout, ledger, code)
+
+        if result.success:
+            return Response(
+                message=f"Pending transfer created.\n  ID: {result.id}\n  Use post_transfer or void_transfer to complete.",
+                break_loop=False
+            )
+        return Response(message=f"Pending transfer failed: {result.message}", break_loop=False)
+
+    async def _post_transfer(self, store, pending_id: int = 0, **kwargs) -> Response:
+        if not pending_id:
+            return Response(message="pending_id required", break_loop=False)
+
+        result = await store.post_transfer(pending_id)
+        return Response(message=result.message, break_loop=False)
+
+    async def _void_transfer(self, store, pending_id: int = 0, **kwargs) -> Response:
+        if not pending_id:
+            return Response(message="pending_id required", break_loop=False)
+
+        result = await store.void_transfer(pending_id)
+        return Response(message=result.message, break_loop=False)
+
+    async def _get_balance(self, store, account: str = "", **kwargs) -> Response:
+        if not account:
+            return Response(message="account name or ID required", break_loop=False)
+
+        try:
+            balance = await store.get_balance(account)
+            return Response(message=f"Balance for {account}: {balance}", break_loop=False)
+        except ValueError as e:
+            return Response(message=str(e), break_loop=False)
+
+    async def _get_account(self, store, account: str = "", **kwargs) -> Response:
+        if not account:
+            return Response(message="account name or ID required", break_loop=False)
+
+        info = await store.get_account(account)
+        if not info:
+            return Response(message=f"Account not found: {account}", break_loop=False)
+
         return Response(
-            message=f"Pending transfer created. ID: {transfer_id}\nUse post_transfer or void_transfer to complete.",
+            message=f"Account: {info.name}\n"
+                    f"  ID: {info.id}\n"
+                    f"  Type: {info.account_type.name}\n"
+                    f"  Ledger: {info.ledger}\n"
+                    f"  Code: {info.code}\n"
+                    f"  Description: {info.description}\n"
+                    f"  Credits Posted: {info.credits_posted}\n"
+                    f"  Debits Posted: {info.debits_posted}\n"
+                    f"  Balance: {info.balance}\n"
+                    f"  Pending: +{info.credits_pending} -{info.debits_pending}",
             break_loop=False
         )
 
-    def _post_transfer(self, client, pending_id: int = 0, **kwargs) -> Response:
-        post_id = uuid.uuid4().int
-        xfer = tigerbeetle.Transfer(
-            id=post_id, debit_account_id=0, credit_account_id=0, amount=0,
-            pending_id=pending_id, user_data_128=0, user_data_64=0, user_data_32=0,
-            timeout=0, ledger=0, code=0,
-            flags=tigerbeetle.TransferFlags.POST_PENDING_TRANSFER, timestamp=0,
-        )
-        errors = client.create_transfers([xfer])
-        if errors:
-            return Response(message=f"Post failed: {errors[0].result}", break_loop=False)
-        return Response(message=f"Transfer {pending_id} posted.", break_loop=False)
-
-    def _void_transfer(self, client, pending_id: int = 0, **kwargs) -> Response:
-        void_id = uuid.uuid4().int
-        xfer = tigerbeetle.Transfer(
-            id=void_id, debit_account_id=0, credit_account_id=0, amount=0,
-            pending_id=pending_id, user_data_128=0, user_data_64=0, user_data_32=0,
-            timeout=0, ledger=0, code=0,
-            flags=tigerbeetle.TransferFlags.VOID_PENDING_TRANSFER, timestamp=0,
-        )
-        errors = client.create_transfers([xfer])
-        if errors:
-            return Response(message=f"Void failed: {errors[0].result}", break_loop=False)
-        return Response(message=f"Transfer {pending_id} voided.", break_loop=False)
-
-    def _get_balance(self, client, account_id: int = 0, **kwargs) -> Response:
-        accounts = client.lookup_accounts([account_id])
+    async def _list_accounts(self, store, **kwargs) -> Response:
+        accounts = await store.list_accounts()
         if not accounts:
-            return Response(message=f"Account {account_id} not found", break_loop=False)
-        acc = accounts[0]
-        return Response(
-            message=f"Account {account_id}:\n  Credits: {acc.credits_posted}\n  Debits: {acc.debits_posted}\n  Balance: {acc.credits_posted - acc.debits_posted}\n  Pending: +{acc.credits_pending} -{acc.debits_pending}",
-            break_loop=False
-        )
+            return Response(message="No named accounts found", break_loop=False)
 
-    def _get_account(self, client, account_id: int = 0, **kwargs) -> Response:
-        accounts = client.lookup_accounts([account_id])
+        lines = ["Named Accounts:"]
+        for acc in accounts:
+            lines.append(f"  {acc.name}: {acc.balance} ({acc.account_type.name})")
+
+        return Response(message="\n".join(lines), break_loop=False)
+
+    async def _setup_chart(self, store, accounts: dict = None, **kwargs) -> Response:
+        """Setup chart of accounts from dict."""
         if not accounts:
-            return Response(message=f"Account {account_id} not found", break_loop=False)
-        acc = accounts[0]
-        return Response(
-            message=f"Account {account_id}:\n  Ledger: {acc.ledger}\n  Code: {acc.code}\n  Credits Posted: {acc.credits_posted}\n  Debits Posted: {acc.debits_posted}\n  Credits Pending: {acc.credits_pending}\n  Debits Pending: {acc.debits_pending}\n  Balance: {acc.credits_posted - acc.debits_posted}",
-            break_loop=False
-        )
+            # Default basic chart
+            accounts = {
+                "cash": {"type": "asset", "description": "Cash and bank accounts"},
+                "accounts_receivable": {"type": "asset", "description": "Money owed to us"},
+                "accounts_payable": {"type": "liability", "description": "Money we owe"},
+                "equity": {"type": "equity", "description": "Owner's equity"},
+                "revenue": {"type": "revenue", "description": "Income"},
+                "expenses": {"type": "expense", "description": "Operating expenses"},
+            }
+
+        created = await store.setup_chart_of_accounts(accounts)
+
+        lines = ["Chart of accounts created:"]
+        for name, account_id in created.items():
+            lines.append(f"  {name}: {account_id}")
+
+        return Response(message="\n".join(lines), break_loop=False)
