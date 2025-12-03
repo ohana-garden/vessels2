@@ -1,28 +1,22 @@
 """
 Code Registry - Graph-native code storage and execution for Vessels.
 
-Code lives in the graph database. On first access, defaults are seeded.
-No startup initialization required - lazy loading handles everything.
-
-Usage:
-    # Load code (auto-seeds from defaults if not in DB)
-    module = await registry.load("moral_geometry")
-    vector = module.MoralVector()
+Code lives in the graph database. No filesystem fallback.
+FalkorDB required - Vessels won't run without it.
 """
 
 import asyncio
 import json
 import types
 import hashlib
-from datetime import datetime, timezone
-from typing import Any, Optional, Type, TypeVar
+from typing import Optional, Type, TypeVar
 from dataclasses import dataclass, field
 
 T = TypeVar('T')
 
 
 # =============================================================================
-# Embedded Code Defaults (seeded to DB on first access)
+# Embedded Defaults (seeded to DB on first access)
 # =============================================================================
 
 _DEFAULTS = {
@@ -189,7 +183,7 @@ class CodeEntry:
 
 
 class CodeRegistry:
-    """Graph-native code registry. Auto-seeds defaults on first access."""
+    """Graph-native code registry. DB required."""
 
     _instance: Optional["CodeRegistry"] = None
     _lock = asyncio.Lock()
@@ -224,13 +218,13 @@ class CodeRegistry:
         return entry.version
 
     async def load(self, name: str) -> Optional[types.ModuleType]:
-        """Load module from graph. Seeds from defaults if missing."""
+        """Load module from graph DB."""
         if name in self._cache:
             return self._cache[name]
 
         entry = await self._load_entry(name)
 
-        # Auto-seed from defaults if not in DB
+        # Seed from defaults if not in DB
         if entry is None and name in _DEFAULTS:
             default = _DEFAULTS[name]
             await self.register(name, default["code"], default.get("code_type", "module"))
@@ -254,14 +248,11 @@ class CodeRegistry:
         for code_type in ["module", "tool", "extension", "agent_capability"]:
             content = await store.get_content(f"code/{code_type}/{name}")
             if content:
-                try:
-                    data = json.loads(content)
-                    if data.get("type") == "code_registry":
-                        entry = CodeEntry.from_dict(data["entry"])
-                        self._entries[name] = entry
-                        return entry
-                except json.JSONDecodeError:
-                    pass
+                data = json.loads(content)
+                if data.get("type") == "code_registry":
+                    entry = CodeEntry.from_dict(data["entry"])
+                    self._entries[name] = entry
+                    return entry
         return None
 
     def _compile(self, name: str, code: str) -> types.ModuleType:

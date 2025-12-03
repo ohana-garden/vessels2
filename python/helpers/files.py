@@ -26,7 +26,7 @@ import threading
 class ContentCache:
     """
     Cache for file content loaded from FalkorDB.
-    Provides DB-first file reading with filesystem fallback.
+    DB only - no filesystem fallback. FalkorDB required.
     """
 
     _instance: Optional["ContentCache"] = None
@@ -253,6 +253,7 @@ def parse_file(
 def read_prompt_file(
     _file: str, _directories: list[str] | None = None, _encoding="utf-8", **kwargs
 ):
+    """Read prompt from DB. No filesystem fallback."""
     if _directories is None:
         _directories = []
 
@@ -263,60 +264,48 @@ def read_prompt_file(
         _directories = [folder_path] + _directories
 
     content = None
-    absolute_path = None
+    base_dir = get_base_dir()
 
-    # Try content cache first (DB-first approach)
+    # Load from DB via content cache
     cache = get_content_cache()
-    if cache.is_loaded():
-        # Try each directory to find content in cache
-        for directory in _directories:
-            rel_path = os.path.join(directory, _file).replace("\\", "/")
-            # Convert absolute to relative if needed
-            base_dir = get_base_dir()
-            if rel_path.startswith(base_dir):
-                rel_path = os.path.relpath(rel_path, base_dir).replace("\\", "/")
-            elif rel_path.startswith("/"):
-                rel_path = rel_path.lstrip("/")
 
-            cached = cache.get(rel_path)
-            if cached is not None:
-                content = cached
-                absolute_path = os.path.join(base_dir, rel_path)
-                break
+    # Try each directory to find content
+    for directory in _directories:
+        rel_path = os.path.join(directory, _file).replace("\\", "/")
+        # Convert absolute to relative if needed
+        if rel_path.startswith(base_dir):
+            rel_path = os.path.relpath(rel_path, base_dir).replace("\\", "/")
+        elif rel_path.startswith("/"):
+            rel_path = rel_path.lstrip("/")
 
-    # Fallback to filesystem if not in cache
+        cached = cache.get(rel_path)
+        if cached is not None:
+            content = cached
+            break
+
     if content is None:
-        absolute_path = find_file_in_dirs(_file, _directories)
-        with open(absolute_path, "r", encoding=_encoding) as f:
-            content = f.read()
+        raise FileNotFoundError(f"Prompt not found in DB: {_file} (searched: {_directories})")
 
-    variables = load_plugin_variables(_file, _directories, **kwargs) or {}  # type: ignore
+    variables = load_plugin_variables(_file, _directories, **kwargs) or {}
     variables.update(kwargs)
 
-    # Replace placeholders with values from kwargs
     content = replace_placeholders_text(content, **variables)
-
-    # Process include statements
-    content = process_includes(
-        # here we use kwargs, the plugin variables are not inherited
-        content,
-        _directories,
-        **kwargs,
-    )
+    content = process_includes(content, _directories, **kwargs)
 
     return content
 
 
 def read_file(relative_path: str, encoding="utf-8"):
-    # Try content cache first for .md files
-    if relative_path.endswith(".md"):
+    """Read file from DB. No filesystem fallback for content files."""
+    # Content files (.md, .txt, .json) come from DB
+    if any(relative_path.endswith(ext) for ext in [".md", ".txt", ".json", ".py"]):
         cache = get_content_cache()
-        if cache.is_loaded():
-            cached = cache.get(relative_path)
-            if cached is not None:
-                return cached
+        cached = cache.get(relative_path)
+        if cached is not None:
+            return cached
+        raise FileNotFoundError(f"Content not found in DB: {relative_path}")
 
-    # Fallback to filesystem
+    # Binary/other files still use filesystem (images, etc.)
     absolute_path = get_abs_path(relative_path)
     with open(absolute_path, "r", encoding=encoding) as f:
         return f.read()
