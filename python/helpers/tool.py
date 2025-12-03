@@ -1,3 +1,16 @@
+"""
+A0 Framework - Tool Base Class
+
+Base class for all A0 tools with guardian integration for output sanitization.
+All tools inherit from this class and implement the execute() method.
+
+Usage:
+    class MyTool(Tool):
+        async def execute(self, **kwargs) -> Response:
+            result = "..."
+            return Response(message=result, break_loop=False)
+"""
+
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -5,13 +18,25 @@ from typing import Any
 from agent import Agent, LoopData
 from python.helpers.print_style import PrintStyle
 from python.helpers.strings import sanitize_string
+from python.helpers.guardians import guard_tool
 
 
 @dataclass
 class Response:
-    message:str
+    """Standard response from tool execution."""
+    message: str
     break_loop: bool
     additional: dict[str, Any] | None = None
+
+    def with_guarded_message(self, source: str = "tool") -> "Response":
+        """Return a new Response with the message sanitized by guardians."""
+        guarded = guard_tool(self.message, source=source)
+        return Response(
+            message=guarded,
+            break_loop=self.break_loop,
+            additional=self.additional
+        )
+
 
 class Tool:
 
@@ -36,6 +61,11 @@ class Tool:
             return
         self.progress += content
 
+    @classmethod
+    def use_guardians(cls) -> bool:
+        """Override to disable guardian sanitization for specific tools."""
+        return True
+
     async def before_execution(self, **kwargs):
         PrintStyle(font_color="#1B4F72", padding=True, background_color="white", bold=True).print(f"{self.agent.agent_name}: Using tool '{self.name}'")
         self.log = self.get_log_object()
@@ -46,6 +76,10 @@ class Tool:
                 PrintStyle().print()
 
     async def after_execution(self, response: Response, **kwargs):
+        # Apply guardian sanitization to tool output
+        if self.use_guardians():
+            response = response.with_guarded_message(source=f"tool.{self.name}")
+
         text = sanitize_string(response.message.strip())
         self.agent.hist_add_tool_result(self.name, text, **(response.additional or {}))
         PrintStyle(font_color="#1B4F72", background_color="white", padding=True, bold=True).print(f"{self.agent.agent_name}: Response from tool '{self.name}'")
