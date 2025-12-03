@@ -104,6 +104,14 @@ class VesselNodeType(str, Enum):
     VOICE_SESSION = "voice_session"
     EMOTIONAL_STATE = "emotional_state"
     HUME_CONFIG = "hume_config"
+    # Entity Ontology types - Universal Entities
+    ENTITY = "entity"                       # Universal entity persona
+    ELICITATION_SESSION = "elicitation_session"  # Persona discovery session
+    SPOKESPERSON = "spokesperson"           # Who speaks for non-self-voiced entities
+    SENSOR_SOURCE = "sensor_source"         # Data streams representing entities
+    STORY = "story"                         # Defining narratives
+    BOUNDARY = "boundary"                   # Entity limits and edges
+    CYCLE = "cycle"                         # Rhythms and patterns
 
 
 class MemoryArea(str, Enum):
@@ -1554,6 +1562,631 @@ class GraphStore:
             "dominant_emotions": emotion_counts.most_common(5),
             "average_valence": valence_sum / count if count else 0,
             "average_arousal": arousal_sum / count if count else 0,
+        }
+
+    # =========================================================================
+    # Entity Ontology Operations - Universal Entity System
+    # =========================================================================
+
+    async def save_entity(
+        self,
+        entity_id: str,
+        entity_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a universal entity persona to the graph.
+
+        This is the primary method for storing any entity type:
+        humans, agents, plants, machines, systems, biomes, etc.
+
+        Args:
+            entity_id: Unique identifier for the entity
+            entity_data: Dict containing full EntityPersona data
+            vessel_id: Which vessel this entity belongs to
+
+        Returns: The entity ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.ENTITY.value,
+            "vessel_id": vessel_id,
+            "entity_type": entity_data.get("entity_type", "agent"),
+            "data": entity_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"entities/{vessel_id}/{entity_id}",
+            content,
+            content_type="entity"
+        )
+
+        return entity_id
+
+    async def load_entity(self, entity_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load an entity persona from the graph."""
+        content = await self.get_content(f"entities/{vessel_id}/{entity_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.ENTITY.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_entities(
+        self,
+        vessel_id: str = "default",
+        entity_type: Optional[str] = None,
+        voice_source: Optional[str] = None,
+        include_proxies: bool = True,
+    ) -> list[dict]:
+        """
+        List all entities for a vessel, optionally filtered.
+
+        Args:
+            vessel_id: Which vessel
+            entity_type: Filter by type (human, agent, plant, machine, etc.)
+            voice_source: Filter by voice source (self, proxy, sensor, collective)
+            include_proxies: Whether to include proxy entities
+
+        Returns: List of entity data dicts
+        """
+        paths = await self.list_content(content_type="entity")
+
+        entities = []
+        prefix = f"entities/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.ENTITY.value:
+                            entity = data.get("data", {})
+
+                            # Apply filters
+                            if entity_type and entity.get("entity_type") != entity_type:
+                                continue
+                            if voice_source and entity.get("voice_source") != voice_source:
+                                continue
+                            if not include_proxies and entity.get("is_proxy"):
+                                continue
+
+                            entities.append(entity)
+                    except json.JSONDecodeError:
+                        pass
+
+        return entities
+
+    async def search_entities_by_type(
+        self,
+        vessel_id: str = "default",
+        entity_types: Optional[list[str]] = None,
+    ) -> dict[str, list[dict]]:
+        """
+        Get entities grouped by type.
+
+        Returns: Dict mapping entity_type -> list of entities
+        """
+        all_entities = await self.list_entities(vessel_id)
+
+        grouped = {}
+        for entity in all_entities:
+            etype = entity.get("entity_type", "unknown")
+            if entity_types and etype not in entity_types:
+                continue
+            if etype not in grouped:
+                grouped[etype] = []
+            grouped[etype].append(entity)
+
+        return grouped
+
+    async def find_entities_needing_spokespersons(
+        self,
+        vessel_id: str = "default",
+    ) -> list[dict]:
+        """Find entities that need spokespersons but don't have any."""
+        entities = await self.list_entities(vessel_id)
+
+        needing = []
+        for entity in entities:
+            voice_source = entity.get("voice_source", "self")
+            if voice_source in ["proxy", "collective"]:
+                spokespersons = entity.get("spokespersons", [])
+                if not spokespersons:
+                    needing.append(entity)
+
+        return needing
+
+    async def find_entities_with_incomplete_elicitation(
+        self,
+        vessel_id: str = "default",
+    ) -> list[dict]:
+        """Find entities that haven't completed persona elicitation."""
+        entities = await self.list_entities(vessel_id)
+        return [e for e in entities if not e.get("elicitation_complete", False)]
+
+    # =========================================================================
+    # Elicitation Session Operations
+    # =========================================================================
+
+    async def save_elicitation_session(
+        self,
+        session_id: str,
+        session_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save an elicitation session to the graph.
+
+        Args:
+            session_id: Unique identifier for the session
+            session_data: Dict containing ElicitationSession data
+            vessel_id: Which vessel
+
+        Returns: The session ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.ELICITATION_SESSION.value,
+            "vessel_id": vessel_id,
+            "entity_id": session_data.get("entity_id"),
+            "data": session_data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"elicitation/{vessel_id}/{session_id}",
+            content,
+            content_type="elicitation_session"
+        )
+
+        return session_id
+
+    async def load_elicitation_session(
+        self,
+        session_id: str,
+        vessel_id: str = "default",
+    ) -> Optional[dict]:
+        """Load an elicitation session from the graph."""
+        content = await self.get_content(f"elicitation/{vessel_id}/{session_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.ELICITATION_SESSION.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_elicitation_sessions(
+        self,
+        vessel_id: str = "default",
+        entity_id: Optional[str] = None,
+        active_only: bool = False,
+    ) -> list[dict]:
+        """
+        List elicitation sessions, optionally filtered.
+
+        Args:
+            vessel_id: Which vessel
+            entity_id: Filter by entity being elicited
+            active_only: Only return active sessions
+
+        Returns: List of session data dicts
+        """
+        paths = await self.list_content(content_type="elicitation_session")
+
+        sessions = []
+        prefix = f"elicitation/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.ELICITATION_SESSION.value:
+                            session = data.get("data", {})
+
+                            # Apply filters
+                            if entity_id and session.get("entity_id") != entity_id:
+                                continue
+                            if active_only and not session.get("is_active"):
+                                continue
+
+                            sessions.append(session)
+                    except json.JSONDecodeError:
+                        pass
+
+        return sessions
+
+    async def get_active_elicitation_for_entity(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+    ) -> Optional[dict]:
+        """Get the active elicitation session for an entity, if any."""
+        sessions = await self.list_elicitation_sessions(
+            vessel_id=vessel_id,
+            entity_id=entity_id,
+            active_only=True
+        )
+        return sessions[0] if sessions else None
+
+    # =========================================================================
+    # Spokesperson Operations
+    # =========================================================================
+
+    async def save_spokesperson(
+        self,
+        spokesperson_id: str,
+        spokesperson_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a spokesperson to the graph.
+
+        Args:
+            spokesperson_id: Unique identifier
+            spokesperson_data: Dict containing Spokesperson data
+            vessel_id: Which vessel
+
+        Returns: The spokesperson ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.SPOKESPERSON.value,
+            "vessel_id": vessel_id,
+            "entity_id": spokesperson_data.get("entity_id"),
+            "data": spokesperson_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"spokespersons/{vessel_id}/{spokesperson_id}",
+            content,
+            content_type="spokesperson"
+        )
+
+        return spokesperson_id
+
+    async def load_spokespersons_for_entity(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+        active_only: bool = True,
+    ) -> list[dict]:
+        """
+        Load all spokespersons for an entity.
+
+        Args:
+            entity_id: Which entity
+            vessel_id: Which vessel
+            active_only: Only return active spokespersons
+
+        Returns: List of spokesperson data dicts
+        """
+        paths = await self.list_content(content_type="spokesperson")
+
+        spokespersons = []
+        prefix = f"spokespersons/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.SPOKESPERSON.value:
+                            spokesperson = data.get("data", {})
+                            if spokesperson.get("entity_id") == entity_id:
+                                if not active_only or spokesperson.get("active", True):
+                                    spokespersons.append(spokesperson)
+                    except json.JSONDecodeError:
+                        pass
+
+        return spokespersons
+
+    # =========================================================================
+    # Sensor Source Operations
+    # =========================================================================
+
+    async def save_sensor_source(
+        self,
+        sensor_id: str,
+        sensor_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a sensor source to the graph.
+
+        Args:
+            sensor_id: Unique identifier
+            sensor_data: Dict containing SensorSource data
+            vessel_id: Which vessel
+
+        Returns: The sensor ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.SENSOR_SOURCE.value,
+            "vessel_id": vessel_id,
+            "entity_id": sensor_data.get("entity_id"),
+            "data": sensor_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"sensors/{vessel_id}/{sensor_id}",
+            content,
+            content_type="sensor_source"
+        )
+
+        return sensor_id
+
+    async def load_sensors_for_entity(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+    ) -> list[dict]:
+        """Load all sensor sources for an entity."""
+        paths = await self.list_content(content_type="sensor_source")
+
+        sensors = []
+        prefix = f"sensors/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.SENSOR_SOURCE.value:
+                            sensor = data.get("data", {})
+                            if sensor.get("entity_id") == entity_id:
+                                sensors.append(sensor)
+                    except json.JSONDecodeError:
+                        pass
+
+        return sensors
+
+    # =========================================================================
+    # Story Operations
+    # =========================================================================
+
+    async def save_story(
+        self,
+        story_id: str,
+        story_data: dict,
+        entity_id: str,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a defining story to the graph.
+
+        Args:
+            story_id: Unique identifier
+            story_data: Dict containing Story data
+            entity_id: Which entity this story belongs to
+            vessel_id: Which vessel
+
+        Returns: The story ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.STORY.value,
+            "vessel_id": vessel_id,
+            "entity_id": entity_id,
+            "data": story_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"stories/{vessel_id}/{entity_id}/{story_id}",
+            content,
+            content_type="story"
+        )
+
+        return story_id
+
+    async def load_stories_for_entity(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+        limit: int = 100,
+    ) -> list[dict]:
+        """Load all stories for an entity."""
+        paths = await self.list_content(content_type="story")
+
+        stories = []
+        prefix = f"stories/{vessel_id}/{entity_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.STORY.value:
+                            stories.append(data.get("data", {}))
+                    except json.JSONDecodeError:
+                        pass
+
+            if len(stories) >= limit:
+                break
+
+        return stories
+
+    # =========================================================================
+    # Vessel-wide Entity Analytics
+    # =========================================================================
+
+    async def get_vessel_entity_summary(
+        self,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Get a summary of all entities in a vessel.
+
+        Returns: Summary with counts by type, voice source, completion status
+        """
+        entities = await self.list_entities(vessel_id)
+
+        from collections import Counter
+
+        type_counts = Counter()
+        voice_counts = Counter()
+        scale_counts = Counter()
+        complete_count = 0
+        incomplete_count = 0
+
+        for entity in entities:
+            type_counts[entity.get("entity_type", "unknown")] += 1
+            voice_counts[entity.get("voice_source", "unknown")] += 1
+            scale_counts[entity.get("temporal_scale", "unknown")] += 1
+
+            if entity.get("elicitation_complete"):
+                complete_count += 1
+            else:
+                incomplete_count += 1
+
+        return {
+            "vessel_id": vessel_id,
+            "total_entities": len(entities),
+            "by_type": dict(type_counts),
+            "by_voice_source": dict(voice_counts),
+            "by_temporal_scale": dict(scale_counts),
+            "elicitation_complete": complete_count,
+            "elicitation_incomplete": incomplete_count,
+        }
+
+    async def get_entity_relationship_graph(
+        self,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Build a graph of entity relationships.
+
+        Returns: Nodes and edges representing entity connections
+        """
+        entities = await self.list_entities(vessel_id)
+
+        nodes = []
+        edges = []
+
+        for entity in entities:
+            entity_id = entity.get("id", "")
+            nodes.append({
+                "id": entity_id,
+                "name": entity.get("name", ""),
+                "type": entity.get("entity_type", "unknown"),
+                "voice_source": entity.get("voice_source", "unknown"),
+            })
+
+            # Dependency edges
+            for dep in entity.get("dependencies", []):
+                # Check if dependency is another entity
+                dep_entity = next(
+                    (e for e in entities if e.get("name", "").lower() == dep.lower()),
+                    None
+                )
+                if dep_entity:
+                    edges.append({
+                        "from": entity_id,
+                        "to": dep_entity.get("id"),
+                        "type": "depends_on",
+                    })
+
+            # Proxy relationships
+            if entity.get("proxy_for"):
+                edges.append({
+                    "from": entity_id,
+                    "to": entity.get("proxy_for"),
+                    "type": "proxy_for",
+                })
+
+            # Spokesperson relationships
+            for sp in entity.get("spokespersons", []):
+                sp_id = sp.get("id", "")
+                if sp_id:
+                    edges.append({
+                        "from": sp_id,
+                        "to": entity_id,
+                        "type": "speaks_for",
+                    })
+
+        return {
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+    async def find_related_entities(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Find all entities related to a given entity.
+
+        Returns: Dict with related entities by relationship type
+        """
+        entities = await self.list_entities(vessel_id)
+        entity = await self.load_entity(entity_id, vessel_id)
+
+        if not entity:
+            return {"entity_id": entity_id, "not_found": True}
+
+        related = {
+            "depends_on": [],
+            "depended_on_by": [],
+            "speaks_for": [],
+            "spoken_for_by": [],
+            "proxies": [],
+            "proxy_of": [],
+            "same_type": [],
+        }
+
+        entity_name = entity.get("name", "").lower()
+        entity_type = entity.get("entity_type")
+
+        for other in entities:
+            if other.get("id") == entity_id:
+                continue
+
+            other_name = other.get("name", "").lower()
+
+            # Check dependencies
+            if entity_name in [d.lower() for d in other.get("dependencies", [])]:
+                related["depended_on_by"].append(other)
+            if other_name in [d.lower() for d in entity.get("dependencies", [])]:
+                related["depends_on"].append(other)
+
+            # Check proxy relationships
+            if other.get("proxy_for") == entity_id:
+                related["proxies"].append(other)
+            if entity.get("proxy_for") == other.get("id"):
+                related["proxy_of"].append(other)
+
+            # Check spokesperson relationships
+            for sp in entity.get("spokespersons", []):
+                if sp.get("name", "").lower() == other_name:
+                    related["spoken_for_by"].append(other)
+            for sp in other.get("spokespersons", []):
+                if sp.get("name", "").lower() == entity_name:
+                    related["speaks_for"].append(other)
+
+            # Same type
+            if other.get("entity_type") == entity_type:
+                related["same_type"].append(other)
+
+        return {
+            "entity_id": entity_id,
+            "entity_name": entity.get("name"),
+            "related": related,
         }
 
     # =========================================================================

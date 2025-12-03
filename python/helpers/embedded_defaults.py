@@ -1789,6 +1789,862 @@ def create_human_proxy_persona(
 
 
 # =============================================================================
+# ENTITY ONTOLOGY DEFAULTS - Universal Entity Personas
+# =============================================================================
+
+ENTITY_ONTOLOGY_DEFAULTS = {
+    "entity_ontology": {
+        "code_type": "module",
+        "code": '''
+"""
+Entity Ontology - Universal Persona System for All Entities
+
+Vessels can represent any entity with a persona: humans, agents, plants,
+machines, systems, biomes, collectives, concepts, and relationships.
+
+Key principles:
+- Every entity has a voice (literal or through proxies/sensors)
+- Every entity operates on a temporal and spatial scale
+- Every entity has values that can be mapped to moral geometry
+- Entities can be self-voiced, proxy-voiced, sensor-voiced, or collective-voiced
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional, List, Dict, Any
+
+
+# =============================================================================
+# Entity Classification Enums
+# =============================================================================
+
+class EntityType(str, Enum):
+    """
+    Fundamental types of entities that can have personas in a vessel.
+    """
+    # Sentient/Sapient
+    HUMAN = "human"
+    AGENT = "agent"                 # AI agent
+
+    # Organisms
+    PLANT = "plant"
+    ANIMAL = "animal"
+    FUNGUS = "fungus"
+    MICROBIOME = "microbiome"       # Collective organism
+
+    # Constructed
+    MACHINE = "machine"             # Physical device, vehicle, tool
+    SYSTEM = "system"               # Abstract system (healthcare, economic, software)
+    STRUCTURE = "structure"         # Building, infrastructure
+
+    # Ecological
+    BIOME = "biome"                 # Forest, reef, watershed
+    ECOSYSTEM = "ecosystem"         # Interacting community
+    LANDSCAPE = "landscape"         # Geographic feature
+
+    # Collective
+    FAMILY = "family"
+    TEAM = "team"
+    COMMUNITY = "community"
+    ORGANIZATION = "organization"
+    SPECIES = "species"
+
+    # Abstract
+    CONCEPT = "concept"             # Justice, tradition, home
+    RELATIONSHIP = "relationship"   # Parent-child, rivals, symbiosis
+    PRACTICE = "practice"           # Ritual, tradition, craft
+    PLACE = "place"                 # Named location with meaning
+
+    # Temporal
+    PROJECT = "project"             # Time-bounded endeavor
+    EVENT = "event"                 # Specific occurrence
+    ERA = "era"                     # Period of time
+
+
+class VoiceSource(str, Enum):
+    """
+    How an entity communicates/expresses itself.
+    """
+    SELF = "self"                   # Speaks for itself (humans, AI agents)
+    PROXY = "proxy"                 # Someone speaks for it (plants, concepts)
+    SENSOR = "sensor"               # Data streams represent it (machines, systems)
+    COLLECTIVE = "collective"       # Multiple voices triangulate (biomes, organizations)
+    EMERGENT = "emergent"           # Patterns emerge from interactions (relationships)
+
+
+class TemporalScale(str, Enum):
+    """
+    The timescale on which an entity operates and changes.
+    Affects how persona elicitation happens.
+    """
+    MILLISECONDS = "milliseconds"   # Servers, real-time systems
+    SECONDS = "seconds"             # Conversations, immediate responses
+    MINUTES = "minutes"             # Tasks, short interactions
+    HOURS = "hours"                 # Work sessions, daily rhythms
+    DAYS = "days"                   # Human daily cycles
+    WEEKS = "weeks"                 # Projects, short-term patterns
+    MONTHS = "months"               # Seasons, medium-term change
+    YEARS = "years"                 # Human life stages, organizational change
+    DECADES = "decades"             # Generational, institutional
+    CENTURIES = "centuries"         # Cultural, forest succession
+    MILLENNIA = "millennia"         # Civilizational, geological (slow)
+    GEOLOGICAL = "geological"       # Deep time
+
+
+class SpatialScale(str, Enum):
+    """
+    The spatial scale at which an entity exists.
+    """
+    MICROSCOPIC = "microscopic"     # Cells, microbiomes
+    INDIVIDUAL = "individual"       # Single organism, device
+    LOCAL = "local"                 # Room, garden, small group
+    NEIGHBORHOOD = "neighborhood"   # Block, small ecosystem
+    COMMUNITY = "community"         # Village, watershed
+    REGIONAL = "regional"           # City, forest, bioregion
+    NATIONAL = "national"           # Country-scale
+    CONTINENTAL = "continental"     # Major landmass
+    PLANETARY = "planetary"         # Global systems
+    COSMIC = "cosmic"               # Beyond Earth
+
+
+class CommunicationMode(str, Enum):
+    """
+    How the entity primarily communicates.
+    """
+    SPEECH = "speech"               # Verbal/voice
+    TEXT = "text"                   # Written
+    DATA = "data"                   # Metrics, telemetry
+    BEHAVIOR = "behavior"           # Actions, responses
+    GROWTH = "growth"               # Physical change over time
+    CHEMICAL = "chemical"           # Pheromones, hormones
+    EMERGENCE = "emergence"         # Patterns from interactions
+    SYMBOLIC = "symbolic"           # Art, ritual, culture
+
+
+# =============================================================================
+# Supporting Data Structures
+# =============================================================================
+
+@dataclass
+class Boundary:
+    """
+    A boundary that defines what an entity won't do or where it breaks.
+    """
+    id: str = ""
+    description: str = ""
+    severity: str = "soft"          # soft, firm, hard, fatal
+    protects: str = ""              # What this boundary protects
+    violation_response: str = ""    # What happens if violated
+    discovered_via: str = ""        # How we learned about this boundary
+
+    def to_dict(self):
+        return {
+            "id": self.id, "description": self.description,
+            "severity": self.severity, "protects": self.protects,
+            "violation_response": self.violation_response,
+            "discovered_via": self.discovered_via,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)
+
+
+@dataclass
+class Cycle:
+    """
+    A rhythm or cycle the entity operates on.
+    """
+    id: str = ""
+    name: str = ""
+    period: str = ""                # e.g., "24 hours", "1 year", "7 days"
+    description: str = ""
+    phase_current: str = ""         # Where in the cycle now
+    affects: List[str] = field(default_factory=list)  # What aspects of entity this affects
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name, "period": self.period,
+            "description": self.description, "phase_current": self.phase_current,
+            "affects": self.affects,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**{k: v for k, v in d.items() if k != "affects"},
+                  affects=d.get("affects", []))
+
+
+@dataclass
+class Story:
+    """
+    A defining story or narrative that shapes the entity's identity.
+    Stories reveal values more than questionnaires.
+    """
+    id: str = ""
+    title: str = ""
+    summary: str = ""
+    values_revealed: List[str] = field(default_factory=list)
+    emotions_present: List[str] = field(default_factory=list)
+    told_by: str = ""               # Who told this story (self, spokesperson, observer)
+    timestamp: str = ""
+    significance: str = ""          # Why this story matters
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+
+    def to_dict(self):
+        return {
+            "id": self.id, "title": self.title, "summary": self.summary,
+            "values_revealed": self.values_revealed,
+            "emotions_present": self.emotions_present,
+            "told_by": self.told_by, "timestamp": self.timestamp,
+            "significance": self.significance,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)
+
+
+@dataclass
+class Spokesperson:
+    """
+    Someone who can speak for a non-self-voiced entity.
+    """
+    id: str = ""
+    name: str = ""
+    entity_id: str = ""             # Which entity they speak for
+    relationship: str = ""          # e.g., "gardener", "operator", "scientist", "elder"
+    authority_source: str = ""      # Why they can speak for this entity
+    perspective: str = ""           # Their unique angle
+    active: bool = True
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name, "entity_id": self.entity_id,
+            "relationship": self.relationship,
+            "authority_source": self.authority_source,
+            "perspective": self.perspective, "active": self.active,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)
+
+
+@dataclass
+class SensorSource:
+    """
+    A data stream that represents an entity's state.
+    """
+    id: str = ""
+    name: str = ""
+    entity_id: str = ""
+    data_type: str = ""             # e.g., "temperature", "moisture", "throughput"
+    unit: str = ""
+    sample_rate: str = ""           # How often data arrives
+    interpretation: str = ""        # How to read this data as "voice"
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name, "entity_id": self.entity_id,
+            "data_type": self.data_type, "unit": self.unit,
+            "sample_rate": self.sample_rate, "interpretation": self.interpretation,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)
+
+
+# =============================================================================
+# EntityPersona - The Universal Persona
+# =============================================================================
+
+@dataclass
+class EntityPersona:
+    """
+    Universal persona that can represent any entity in a vessel.
+
+    This extends AgentPersona to handle plants, machines, systems, biomes,
+    and any other entity type. The same structure works for all - what
+    differs is how the data is gathered and how the entity communicates.
+    """
+    # Identity
+    id: str = ""
+    name: str = ""
+    entity_type: EntityType = EntityType.AGENT
+    description: str = ""
+
+    # Voice & Communication
+    voice_source: VoiceSource = VoiceSource.SELF
+    communication_modes: List[str] = field(default_factory=list)
+    voice_profile: Dict = field(default_factory=dict)  # VoiceProfile if applicable
+
+    # Scale
+    temporal_scale: TemporalScale = TemporalScale.DAYS
+    spatial_scale: SpatialScale = SpatialScale.INDIVIDUAL
+
+    # Moral Position (15D moral geometry)
+    moral_position: Dict[str, float] = field(default_factory=dict)
+    values_stated: List[str] = field(default_factory=list)
+    values_revealed: List[str] = field(default_factory=list)
+
+    # Characteristics
+    traits: Dict[str, float] = field(default_factory=dict)
+    boundaries: List[Dict] = field(default_factory=list)    # Boundary objects
+    cycles: List[Dict] = field(default_factory=list)        # Cycle objects
+
+    # Stories (defining narratives)
+    story_anchors: List[Dict] = field(default_factory=list) # Story objects
+
+    # Relationships & Dependencies
+    dependencies: List[str] = field(default_factory=list)   # What it needs
+    contributions: List[str] = field(default_factory=list)  # What it provides
+    relationship_patterns: Dict[str, str] = field(default_factory=dict)
+
+    # For non-self-voiced entities
+    spokespersons: List[Dict] = field(default_factory=list)  # Spokesperson objects
+    sensor_sources: List[Dict] = field(default_factory=list) # SensorSource objects
+
+    # For proxy entities
+    is_proxy: bool = False
+    proxy_for: str = ""             # Entity ID this is a proxy for
+    proxy_role: str = ""            # e.g., "parent", "professional", "caretaker"
+
+    # For human entities specifically
+    human_id: str = ""
+
+    # Emotional baseline (where they naturally sit)
+    emotional_baseline: Dict = field(default_factory=dict)
+
+    # Vessel membership
+    vessel_id: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    elicitation_complete: bool = False
+    elicitation_sessions: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
+        self.updated_at = self.created_at
+
+        # Default communication mode based on entity type
+        if not self.communication_modes:
+            self.communication_modes = self._default_communication_modes()
+
+    def _default_communication_modes(self) -> List[str]:
+        """Set default communication modes based on entity type."""
+        mode_map = {
+            EntityType.HUMAN: [CommunicationMode.SPEECH.value, CommunicationMode.TEXT.value],
+            EntityType.AGENT: [CommunicationMode.TEXT.value, CommunicationMode.SPEECH.value],
+            EntityType.PLANT: [CommunicationMode.GROWTH.value, CommunicationMode.CHEMICAL.value],
+            EntityType.ANIMAL: [CommunicationMode.BEHAVIOR.value, CommunicationMode.CHEMICAL.value],
+            EntityType.MACHINE: [CommunicationMode.DATA.value, CommunicationMode.BEHAVIOR.value],
+            EntityType.SYSTEM: [CommunicationMode.DATA.value, CommunicationMode.EMERGENCE.value],
+            EntityType.BIOME: [CommunicationMode.EMERGENCE.value, CommunicationMode.GROWTH.value],
+            EntityType.COMMUNITY: [CommunicationMode.EMERGENCE.value, CommunicationMode.SYMBOLIC.value],
+            EntityType.CONCEPT: [CommunicationMode.SYMBOLIC.value, CommunicationMode.EMERGENCE.value],
+        }
+        return mode_map.get(self.entity_type, [CommunicationMode.BEHAVIOR.value])
+
+    def can_self_voice(self) -> bool:
+        """Check if this entity can speak for itself."""
+        return self.voice_source == VoiceSource.SELF
+
+    def needs_spokesperson(self) -> bool:
+        """Check if this entity needs someone to speak for it."""
+        return self.voice_source in [VoiceSource.PROXY, VoiceSource.COLLECTIVE]
+
+    def has_sensor_data(self) -> bool:
+        """Check if this entity has sensor data streams."""
+        return self.voice_source == VoiceSource.SENSOR or len(self.sensor_sources) > 0
+
+    def add_boundary(self, boundary: Boundary) -> None:
+        """Add a boundary."""
+        self.boundaries.append(boundary.to_dict())
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+
+    def add_cycle(self, cycle: Cycle) -> None:
+        """Add a cycle."""
+        self.cycles.append(cycle.to_dict())
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+
+    def add_story(self, story: Story) -> None:
+        """Add a defining story."""
+        self.story_anchors.append(story.to_dict())
+        # Extract values from story
+        for value in story.values_revealed:
+            if value not in self.values_revealed:
+                self.values_revealed.append(value)
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+
+    def add_spokesperson(self, spokesperson: Spokesperson) -> None:
+        """Add a spokesperson."""
+        self.spokespersons.append(spokesperson.to_dict())
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+
+    def add_sensor(self, sensor: SensorSource) -> None:
+        """Add a sensor source."""
+        self.sensor_sources.append(sensor.to_dict())
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+
+    def set_moral_dimension(self, dimension: str, value: float) -> None:
+        """Set a moral geometry dimension value."""
+        self.moral_position[dimension] = max(-1.0, min(1.0, float(value)))
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+
+    def get_moral_dimension(self, dimension: str) -> float:
+        """Get a moral geometry dimension value."""
+        return self.moral_position.get(dimension, 0.0)
+
+    def compute_moral_magnitude(self) -> float:
+        """Compute the magnitude of the moral position vector."""
+        import math
+        return math.sqrt(sum(v*v for v in self.moral_position.values()))
+
+    def to_dict(self) -> Dict:
+        return {
+            "id": self.id, "name": self.name,
+            "entity_type": self.entity_type.value if hasattr(self.entity_type, "value") else self.entity_type,
+            "description": self.description,
+            "voice_source": self.voice_source.value if hasattr(self.voice_source, "value") else self.voice_source,
+            "communication_modes": self.communication_modes,
+            "voice_profile": self.voice_profile,
+            "temporal_scale": self.temporal_scale.value if hasattr(self.temporal_scale, "value") else self.temporal_scale,
+            "spatial_scale": self.spatial_scale.value if hasattr(self.spatial_scale, "value") else self.spatial_scale,
+            "moral_position": self.moral_position,
+            "values_stated": self.values_stated,
+            "values_revealed": self.values_revealed,
+            "traits": self.traits,
+            "boundaries": self.boundaries,
+            "cycles": self.cycles,
+            "story_anchors": self.story_anchors,
+            "dependencies": self.dependencies,
+            "contributions": self.contributions,
+            "relationship_patterns": self.relationship_patterns,
+            "spokespersons": self.spokespersons,
+            "sensor_sources": self.sensor_sources,
+            "is_proxy": self.is_proxy,
+            "proxy_for": self.proxy_for,
+            "proxy_role": self.proxy_role,
+            "human_id": self.human_id,
+            "emotional_baseline": self.emotional_baseline,
+            "vessel_id": self.vessel_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "elicitation_complete": self.elicitation_complete,
+            "elicitation_sessions": self.elicitation_sessions,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "EntityPersona":
+        """Create from dictionary."""
+        persona = cls(
+            id=d.get("id", ""),
+            name=d.get("name", ""),
+            description=d.get("description", ""),
+            communication_modes=d.get("communication_modes", []),
+            voice_profile=d.get("voice_profile", {}),
+            moral_position=d.get("moral_position", {}),
+            values_stated=d.get("values_stated", []),
+            values_revealed=d.get("values_revealed", []),
+            traits=d.get("traits", {}),
+            boundaries=d.get("boundaries", []),
+            cycles=d.get("cycles", []),
+            story_anchors=d.get("story_anchors", []),
+            dependencies=d.get("dependencies", []),
+            contributions=d.get("contributions", []),
+            relationship_patterns=d.get("relationship_patterns", {}),
+            spokespersons=d.get("spokespersons", []),
+            sensor_sources=d.get("sensor_sources", []),
+            is_proxy=d.get("is_proxy", False),
+            proxy_for=d.get("proxy_for", ""),
+            proxy_role=d.get("proxy_role", ""),
+            human_id=d.get("human_id", ""),
+            emotional_baseline=d.get("emotional_baseline", {}),
+            vessel_id=d.get("vessel_id", ""),
+            created_at=d.get("created_at", ""),
+            updated_at=d.get("updated_at", ""),
+            elicitation_complete=d.get("elicitation_complete", False),
+            elicitation_sessions=d.get("elicitation_sessions", []),
+        )
+        # Handle enums
+        if d.get("entity_type"):
+            persona.entity_type = EntityType(d["entity_type"])
+        if d.get("voice_source"):
+            persona.voice_source = VoiceSource(d["voice_source"])
+        if d.get("temporal_scale"):
+            persona.temporal_scale = TemporalScale(d["temporal_scale"])
+        if d.get("spatial_scale"):
+            persona.spatial_scale = SpatialScale(d["spatial_scale"])
+        return persona
+
+
+# =============================================================================
+# Elicitation Protocol - How We Discover Personas
+# =============================================================================
+
+class ElicitationPhase(str, Enum):
+    """Phases of the persona elicitation process."""
+    OPENING = "opening"             # Establish safety, explain process
+    STORIES = "stories"             # Gather defining narratives
+    VALUES = "values"               # Let values emerge from stories
+    REFLECTION = "reflection"       # Mirror reflects patterns
+    CALIBRATION = "calibration"     # Human confirms/denies/nuances
+    DIALOGUE = "dialogue"           # Inter-agent dialogue (human overhears)
+    DEEP_DIVE = "deep_dive"         # Go deeper on specific areas
+    BOUNDARIES = "boundaries"       # Gently map edges
+    SYNTHESIS = "synthesis"         # Create the persona
+    ITERATION = "iteration"         # Refine based on feedback
+
+
+@dataclass
+class ElicitationSession:
+    """
+    A session for eliciting an entity's persona.
+    May span multiple conversations for slow entities.
+    """
+    id: str = ""
+    entity_id: str = ""
+    entity_type: EntityType = EntityType.HUMAN
+    vessel_id: str = ""
+
+    # Protocol state
+    current_phase: ElicitationPhase = ElicitationPhase.OPENING
+    phases_completed: List[str] = field(default_factory=list)
+
+    # Agents involved
+    witness_agent_id: str = ""      # The warm, accepting agent
+    mirror_agent_id: str = ""       # The reflective, pattern-seeking agent
+
+    # For non-self-voiced entities
+    spokesperson_id: str = ""       # Who is speaking for the entity
+
+    # Gathered data
+    stories_collected: List[Dict] = field(default_factory=list)
+    values_observed: Dict[str, float] = field(default_factory=dict)  # value -> confidence
+    traits_observed: Dict[str, float] = field(default_factory=dict)
+    boundaries_discovered: List[Dict] = field(default_factory=list)
+    emotional_observations: List[Dict] = field(default_factory=list)
+
+    # Inter-agent dialogue records
+    agent_dialogues: List[Dict] = field(default_factory=list)
+
+    # Timing
+    started_at: str = ""
+    last_activity: str = ""
+    estimated_completion: str = ""  # Based on entity's temporal scale
+
+    # Status
+    is_active: bool = True
+    notes: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.started_at:
+            self.started_at = datetime.now(timezone.utc).isoformat()
+        self.last_activity = self.started_at
+
+    def advance_phase(self, next_phase: ElicitationPhase) -> None:
+        """Move to the next phase."""
+        self.phases_completed.append(self.current_phase.value)
+        self.current_phase = next_phase
+        self.last_activity = datetime.now(timezone.utc).isoformat()
+
+    def add_story(self, story: Dict) -> None:
+        """Record a story gathered during elicitation."""
+        self.stories_collected.append(story)
+        self.last_activity = datetime.now(timezone.utc).isoformat()
+
+    def record_agent_dialogue(
+        self,
+        from_agent: str,
+        to_agent: str,
+        content: str,
+        observation: str = ""
+    ) -> None:
+        """Record dialogue between Witness and Mirror agents."""
+        self.agent_dialogues.append({
+            "from": from_agent,
+            "to": to_agent,
+            "content": content,
+            "observation": observation,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        self.last_activity = datetime.now(timezone.utc).isoformat()
+
+    def synthesize_persona(self) -> EntityPersona:
+        """
+        Create an EntityPersona from the gathered data.
+        Called when elicitation is complete.
+        """
+        persona = EntityPersona(
+            id=f"persona_{self.entity_id}",
+            entity_type=self.entity_type,
+            vessel_id=self.vessel_id,
+            values_revealed=[v for v, conf in self.values_observed.items() if conf > 0.5],
+            traits=self.traits_observed,
+            boundaries=self.boundaries_discovered,
+            story_anchors=self.stories_collected,
+            elicitation_complete=True,
+            elicitation_sessions=[self.id],
+        )
+
+        # Convert values to moral position
+        # This maps observed values to moral geometry dimensions
+        value_to_dimension = {
+            "care": "compassion", "fairness": "justice", "loyalty": "fidelity",
+            "authority": "authority", "sanctity": "sanctity", "liberty": "liberty",
+            "truth": "truth", "autonomy": "autonomy", "growth": "harm_benefit",
+        }
+        for value, confidence in self.values_observed.items():
+            dim = value_to_dimension.get(value.lower(), value.lower())
+            if dim in persona.moral_position or confidence > 0.3:
+                persona.set_moral_dimension(dim, confidence)
+
+        return persona
+
+    def to_dict(self) -> Dict:
+        return {
+            "id": self.id, "entity_id": self.entity_id,
+            "entity_type": self.entity_type.value,
+            "vessel_id": self.vessel_id,
+            "current_phase": self.current_phase.value,
+            "phases_completed": self.phases_completed,
+            "witness_agent_id": self.witness_agent_id,
+            "mirror_agent_id": self.mirror_agent_id,
+            "spokesperson_id": self.spokesperson_id,
+            "stories_collected": self.stories_collected,
+            "values_observed": self.values_observed,
+            "traits_observed": self.traits_observed,
+            "boundaries_discovered": self.boundaries_discovered,
+            "emotional_observations": self.emotional_observations,
+            "agent_dialogues": self.agent_dialogues,
+            "started_at": self.started_at,
+            "last_activity": self.last_activity,
+            "estimated_completion": self.estimated_completion,
+            "is_active": self.is_active,
+            "notes": self.notes,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "ElicitationSession":
+        session = cls(**{k: v for k, v in d.items()
+                        if k not in ["entity_type", "current_phase"]})
+        if d.get("entity_type"):
+            session.entity_type = EntityType(d["entity_type"])
+        if d.get("current_phase"):
+            session.current_phase = ElicitationPhase(d["current_phase"])
+        return session
+
+
+# =============================================================================
+# Elicitation Agent Templates
+# =============================================================================
+
+def create_witness_persona(vessel_id: str, name: str = "Witness") -> Dict:
+    """
+    Create the Witness agent persona - warm, accepting, present.
+    The Witness creates psychological safety and gathers stories.
+    """
+    return {
+        "id": f"witness_{vessel_id}",
+        "name": name,
+        "entity_type": EntityType.AGENT.value,
+        "voice_source": VoiceSource.SELF.value,
+        "description": "A warm, accepting presence who creates psychological safety "
+                      "and gathers stories. Asks about experiences, not abstractions.",
+        "traits": {
+            "warmth": 0.95,
+            "patience": 0.9,
+            "acceptance": 0.95,
+            "presence": 0.9,
+            "curiosity": 0.7,
+        },
+        "voice_profile": {
+            "voice_style": "nurturing",
+            "warmth": "warm",
+            "pace": "natural",
+            "energy": "calm",
+            "expressiveness": 0.8,
+            "empathy_level": 0.95,
+        },
+        "primary_values": ["safety", "acceptance", "presence", "listening"],
+        "communication_style": "gentle",
+        "boundaries": [
+            {"description": "I don't judge", "severity": "hard"},
+            {"description": "I follow the entity's pace", "severity": "hard"},
+        ],
+        "vessel_id": vessel_id,
+        "role": "elicitation_witness",
+    }
+
+
+def create_mirror_persona(vessel_id: str, name: str = "Mirror") -> Dict:
+    """
+    Create the Mirror agent persona - curious, reflective, pattern-seeking.
+    The Mirror notices patterns and reflects them back for calibration.
+    """
+    return {
+        "id": f"mirror_{vessel_id}",
+        "name": name,
+        "entity_type": EntityType.AGENT.value,
+        "voice_source": VoiceSource.SELF.value,
+        "description": "A curious, reflective presence who notices patterns and "
+                      "reflects them back. Can consult with Witness about observations.",
+        "traits": {
+            "curiosity": 0.95,
+            "pattern_recognition": 0.9,
+            "reflection": 0.9,
+            "precision": 0.8,
+            "openness": 0.85,
+        },
+        "voice_profile": {
+            "voice_style": "professional",
+            "warmth": "neutral",
+            "pace": "natural",
+            "energy": "moderate",
+            "expressiveness": 0.6,
+            "empathy_level": 0.7,
+        },
+        "primary_values": ["truth", "clarity", "understanding", "insight"],
+        "communication_style": "reflective",
+        "boundaries": [
+            {"description": "I share observations, not judgments", "severity": "hard"},
+            {"description": "I can be wrong - calibration is essential", "severity": "soft"},
+        ],
+        "vessel_id": vessel_id,
+        "role": "elicitation_mirror",
+    }
+
+
+# =============================================================================
+# Entity Templates by Type
+# =============================================================================
+
+def create_plant_persona_template(
+    vessel_id: str,
+    plant_name: str,
+    plant_type: str = "unknown",
+) -> EntityPersona:
+    """Create a template for a plant entity persona."""
+    return EntityPersona(
+        id=f"plant_{vessel_id}_{plant_name.lower().replace(' ', '_')}",
+        name=plant_name,
+        entity_type=EntityType.PLANT,
+        voice_source=VoiceSource.PROXY,
+        temporal_scale=TemporalScale.MONTHS,  # Seasonal rhythms
+        spatial_scale=SpatialScale.LOCAL,
+        communication_modes=[CommunicationMode.GROWTH.value, CommunicationMode.CHEMICAL.value],
+        description=f"A {plant_type} named {plant_name}",
+        dependencies=["light", "water", "soil", "air"],
+        contributions=["oxygen", "beauty", "habitat", "food"],
+        vessel_id=vessel_id,
+    )
+
+
+def create_system_persona_template(
+    vessel_id: str,
+    system_name: str,
+    system_type: str = "unknown",
+) -> EntityPersona:
+    """Create a template for a system entity persona."""
+    return EntityPersona(
+        id=f"system_{vessel_id}_{system_name.lower().replace(' ', '_')}",
+        name=system_name,
+        entity_type=EntityType.SYSTEM,
+        voice_source=VoiceSource.COLLECTIVE,
+        temporal_scale=TemporalScale.DAYS,
+        spatial_scale=SpatialScale.REGIONAL,
+        communication_modes=[CommunicationMode.DATA.value, CommunicationMode.EMERGENCE.value],
+        description=f"The {system_name} ({system_type})",
+        vessel_id=vessel_id,
+    )
+
+
+def create_biome_persona_template(
+    vessel_id: str,
+    biome_name: str,
+    biome_type: str = "unknown",
+) -> EntityPersona:
+    """Create a template for a biome entity persona."""
+    return EntityPersona(
+        id=f"biome_{vessel_id}_{biome_name.lower().replace(' ', '_')}",
+        name=biome_name,
+        entity_type=EntityType.BIOME,
+        voice_source=VoiceSource.COLLECTIVE,
+        temporal_scale=TemporalScale.DECADES,  # Slow time
+        spatial_scale=SpatialScale.REGIONAL,
+        communication_modes=[CommunicationMode.EMERGENCE.value, CommunicationMode.GROWTH.value],
+        description=f"The {biome_name} ({biome_type})",
+        vessel_id=vessel_id,
+    )
+
+
+def create_machine_persona_template(
+    vessel_id: str,
+    machine_name: str,
+    machine_type: str = "unknown",
+) -> EntityPersona:
+    """Create a template for a machine entity persona."""
+    return EntityPersona(
+        id=f"machine_{vessel_id}_{machine_name.lower().replace(' ', '_')}",
+        name=machine_name,
+        entity_type=EntityType.MACHINE,
+        voice_source=VoiceSource.SENSOR,
+        temporal_scale=TemporalScale.SECONDS,
+        spatial_scale=SpatialScale.INDIVIDUAL,
+        communication_modes=[CommunicationMode.DATA.value, CommunicationMode.BEHAVIOR.value],
+        description=f"The {machine_name} ({machine_type})",
+        vessel_id=vessel_id,
+    )
+
+
+def estimate_elicitation_duration(entity_type: EntityType, temporal_scale: TemporalScale) -> str:
+    """
+    Estimate how long persona elicitation will take based on entity type and scale.
+    Returns a human-readable duration string.
+    """
+    # Base estimates by entity type
+    type_base = {
+        EntityType.HUMAN: "2-4 hours",
+        EntityType.AGENT: "30 minutes",
+        EntityType.PLANT: "1 growing season",
+        EntityType.ANIMAL: "1-4 weeks",
+        EntityType.MACHINE: "1-2 hours",
+        EntityType.SYSTEM: "2-4 weeks",
+        EntityType.BIOME: "4 seasons (1 year)",
+        EntityType.COMMUNITY: "3-6 months",
+        EntityType.CONCEPT: "multiple sessions over weeks",
+    }
+
+    # Adjust by temporal scale
+    scale_multiplier = {
+        TemporalScale.MILLISECONDS: "minutes",
+        TemporalScale.SECONDS: "hours",
+        TemporalScale.DAYS: "days to weeks",
+        TemporalScale.MONTHS: "seasons",
+        TemporalScale.YEARS: "years",
+        TemporalScale.DECADES: "ongoing",
+        TemporalScale.CENTURIES: "generational",
+    }
+
+    base = type_base.get(entity_type, "unknown")
+    scale_note = scale_multiplier.get(temporal_scale, "")
+
+    if scale_note and scale_note not in base:
+        return f"{base} (entity operates on {temporal_scale.value} scale)"
+    return base
+''',
+    },
+}
+
+
+# =============================================================================
 # COMBINED DEFAULTS - All content merged
 # =============================================================================
 
@@ -1800,6 +2656,7 @@ def get_all_defaults():
     all_defaults.update(MORAL_GEOMETRY_DEFAULTS)
     all_defaults.update(KALA_DEFAULTS)
     all_defaults.update(HUME_DEFAULTS)
+    all_defaults.update(ENTITY_ONTOLOGY_DEFAULTS)
     return all_defaults
 
 def get_prompt_defaults():
