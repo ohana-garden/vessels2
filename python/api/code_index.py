@@ -1,15 +1,16 @@
 """
-A0 API - Code Indexing
+A0 API - Code Management
 
-API endpoints for managing the code index in FalkorDB.
+API endpoints for managing code stored in FalkorDB.
+Supports bootstrap (loading from filesystem) and runtime operations.
 """
 
 from python.helpers.api import ApiHandler, Request
-from python.helpers.code_store import CodeStore, CodeType
+from python.helpers.code_loader import CodeLoader, CodeType
 
 
 class CodeIndex(ApiHandler):
-    """Index codebase into FalkorDB."""
+    """Manage code stored in FalkorDB."""
 
     @classmethod
     def get_methods(cls) -> list[str]:
@@ -18,51 +19,89 @@ class CodeIndex(ApiHandler):
     async def process(self, input: dict, request: Request) -> dict:
         operation = input.get("operation", "status")
 
-        if operation == "index_all":
-            return await self._index_all()
-        elif operation == "index_file":
-            return await self._index_file(input.get("path", ""))
-        elif operation == "index_directory":
-            return await self._index_directory(input.get("directory", ""))
+        if operation == "bootstrap":
+            return await self._bootstrap(input.get("directories"))
+        elif operation == "store":
+            return await self._store(input)
+        elif operation == "get":
+            return await self._get(input.get("path", ""))
+        elif operation == "delete":
+            return await self._delete(input.get("path", ""))
         elif operation == "search":
             return await self._search(input.get("query", ""), input.get("code_type", ""))
+        elif operation == "list":
+            return await self._list(input.get("code_type", ""))
         elif operation == "status":
             return await self._status()
         else:
-            return {"error": f"Unknown operation: {operation}"}
+            return {"error": f"Unknown operation: {operation}. Use: bootstrap, store, get, delete, search, list, status"}
 
-    async def _index_all(self) -> dict:
-        """Index entire codebase."""
-        store = await CodeStore.get()
-        count = await store.index_codebase()
-        return {"status": "ok", "indexed": count}
+    async def _bootstrap(self, directories: list[str] | None) -> dict:
+        """Bootstrap: Load all code from filesystem into FalkorDB."""
+        loader = await CodeLoader.get()
+        count = await loader.bootstrap_from_filesystem(directories)
+        return {"status": "ok", "loaded": count, "message": "Bootstrap complete - code loaded from filesystem to FalkorDB"}
 
-    async def _index_file(self, path: str) -> dict:
-        """Index a single file."""
+    async def _store(self, input: dict) -> dict:
+        """Store code in FalkorDB."""
+        path = input.get("path", "")
+        content = input.get("content", "")
+        code_type = input.get("code_type", "script")
+
+        if not path:
+            return {"error": "path is required"}
+        if not content:
+            return {"error": "content is required"}
+
+        try:
+            ct = CodeType(code_type.lower())
+        except ValueError:
+            ct = CodeType.SCRIPT
+
+        loader = await CodeLoader.get()
+        stored = await loader.store(path, content, ct, input.get("metadata"))
+        return {
+            "status": "ok",
+            "path": stored.path,
+            "hash": stored.hash,
+            "code_type": stored.code_type.value,
+        }
+
+    async def _get(self, path: str) -> dict:
+        """Get code from FalkorDB."""
         if not path:
             return {"error": "path is required"}
 
-        store = await CodeStore.get()
-        result = await store.index_file(path)
-        if result:
-            return {"status": "ok", "path": path, "type": result.code_type.value}
-        return {"error": f"Failed to index: {path}"}
+        loader = await CodeLoader.get()
+        stored = await loader.get_code(path)
 
-    async def _index_directory(self, directory: str) -> dict:
-        """Index a directory."""
-        if not directory:
-            return {"error": "directory is required"}
+        if not stored:
+            return {"error": f"Code not found: {path}"}
 
-        store = await CodeStore.get()
-        count = await store.index_directory(directory)
-        return {"status": "ok", "directory": directory, "indexed": count}
+        return {
+            "status": "ok",
+            "path": stored.path,
+            "content": stored.content,
+            "code_type": stored.code_type.value,
+            "hash": stored.hash,
+            "metadata": stored.metadata,
+        }
+
+    async def _delete(self, path: str) -> dict:
+        """Delete code from FalkorDB."""
+        if not path:
+            return {"error": "path is required"}
+
+        loader = await CodeLoader.get()
+        await loader.delete(path)
+        return {"status": "ok", "deleted": path}
 
     async def _search(self, query: str, code_type: str) -> dict:
-        """Search indexed code."""
+        """Search stored code."""
         if not query:
             return {"error": "query is required"}
 
-        store = await CodeStore.get()
+        loader = await CodeLoader.get()
 
         ct = None
         if code_type:
@@ -71,24 +110,38 @@ class CodeIndex(ApiHandler):
             except ValueError:
                 pass
 
-        results = await store.search(query, code_type=ct)
+        results = await loader.search(query, code_type=ct)
         return {"status": "ok", "results": results}
 
+    async def _list(self, code_type: str) -> dict:
+        """List all stored code."""
+        loader = await CodeLoader.get()
+
+        ct = None
+        if code_type:
+            try:
+                ct = CodeType(code_type.lower())
+            except ValueError:
+                pass
+
+        paths = await loader.list_code(code_type=ct)
+        return {"status": "ok", "paths": paths, "count": len(paths)}
+
     async def _status(self) -> dict:
-        """Get indexing status."""
-        store = await CodeStore.get()
-        paths = await store.list_code()
+        """Get code storage status."""
+        loader = await CodeLoader.get()
 
         # Count by type
         type_counts = {}
-        for path in paths:
-            data = await store.get_code(path)
-            if data:
-                ct = data.get("metadata", {}).get("code_type", "other")
-                type_counts[ct] = type_counts.get(ct, 0) + 1
+        for code_type in CodeType:
+            paths = await loader.list_code(code_type=code_type)
+            if paths:
+                type_counts[code_type.value] = len(paths)
+
+        total = sum(type_counts.values())
 
         return {
             "status": "ok",
-            "total_files": len(paths),
+            "total_files": total,
             "by_type": type_counts,
         }
