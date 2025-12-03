@@ -93,6 +93,11 @@ class VesselNodeType(str, Enum):
     MORAL_TRAJECTORY = "moral_trajectory"
     SPECTRAL_DECOMPOSITION = "spectral_decomposition"
     MORAL_DISTANCE = "moral_distance"
+    # Kala types - Contribution Visibility
+    KALA_EVENT = "kala_event"
+    KALA_PARTICIPATION = "kala_participation"
+    KALA_PATTERN = "kala_pattern"
+    KALA_ATTRACTOR = "kala_attractor"
 
 
 class MemoryArea(str, Enum):
@@ -1032,6 +1037,259 @@ class GraphStore:
             paths = [p for p in paths if f"moral/{geometry_type}" in p]
 
         return paths
+
+    # =========================================================================
+    # Kala Operations - Contribution Visibility System
+    # =========================================================================
+
+    async def save_kala_event(
+        self,
+        event_id: str,
+        event_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a Kala event to the graph.
+
+        Args:
+            event_id: Unique identifier for the event
+            event_data: Dict containing event data (participants, multipliers, etc.)
+            vessel_id: Which vessel/community this belongs to
+
+        Returns: The event ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.KALA_EVENT.value,
+            "vessel_id": vessel_id,
+            "data": event_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"kala/events/{vessel_id}/{event_id}",
+            content,
+            content_type="kala"
+        )
+
+        return event_id
+
+    async def load_kala_event(self, event_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load a Kala event from the graph."""
+        content = await self.get_content(f"kala/events/{vessel_id}/{event_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.KALA_EVENT.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_kala_events(
+        self,
+        vessel_id: str = "default",
+        limit: int = 100,
+    ) -> list[dict]:
+        """List all Kala events for a vessel."""
+        paths = await self.list_content(content_type="kala")
+
+        events = []
+        prefix = f"kala/events/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.KALA_EVENT.value:
+                            events.append(data.get("data"))
+                    except json.JSONDecodeError:
+                        pass
+
+            if len(events) >= limit:
+                break
+
+        return events
+
+    async def get_participant_history(
+        self,
+        participant_id: str,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Get a participant's own history (HumanView).
+        Returns only their own data - no rankings or comparisons.
+        """
+        events = await self.list_kala_events(vessel_id)
+
+        participant_events = []
+        total_kala = 0.0
+        total_hours = 0.0
+
+        for event in events:
+            participants = event.get("participants", [])
+            for p in participants:
+                if p.get("participant_id") == participant_id:
+                    participant_events.append({
+                        "event_id": event.get("id"),
+                        "event_name": event.get("name"),
+                        "timestamp": p.get("timestamp"),
+                        "hours": p.get("hours", 0),
+                        "kala_received": p.get("kala_received", 0),
+                    })
+                    total_kala += p.get("kala_received", 0)
+                    total_hours += p.get("hours", 0)
+
+        # Aggregate community stats (anonymized)
+        all_participants = set()
+        community_total_kala = 0.0
+        for event in events:
+            community_total_kala += event.get("total_kala", 0)
+            for p in event.get("participants", []):
+                all_participants.add(p.get("participant_id"))
+
+        return {
+            "participant_id": participant_id,
+            "total_kala": total_kala,
+            "event_count": len(participant_events),
+            "total_hours": total_hours,
+            "events": participant_events,
+            # Anonymized community stats
+            "community_total_kala": community_total_kala,
+            "community_event_count": len(events),
+            "community_active_participants": len(all_participants),
+        }
+
+    async def get_agent_view(
+        self,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Get the full agent view (AgentView) for coordination.
+        Contains pattern data that enables burnout/withdrawal detection.
+        NOT exposed to humans.
+        """
+        events = await self.list_kala_events(vessel_id)
+
+        # Build participation frequency
+        from collections import defaultdict
+        participation_frequency = defaultdict(int)
+        participant_hours = defaultdict(float)
+        participant_kala = defaultdict(float)
+        all_participations = defaultdict(list)
+
+        for event in events:
+            for p in event.get("participants", []):
+                pid = p.get("participant_id")
+                participation_frequency[pid] += 1
+                participant_hours[pid] += p.get("hours", 0)
+                participant_kala[pid] += p.get("kala_received", 0)
+                all_participations[pid].append(p)
+
+        # Detect burnout risks (high recent hours)
+        burnout_risks = []
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        week_ago = now - timedelta(days=7)
+
+        for pid, participations in all_participations.items():
+            recent_hours = sum(
+                p.get("hours", 0) for p in participations
+                if datetime.fromisoformat(p.get("timestamp", now.isoformat())) > week_ago
+            )
+            if recent_hours > 20:  # threshold
+                burnout_risks.append({
+                    "participant_id": pid,
+                    "hours_this_week": recent_hours,
+                    "message": "High contribution - may need support"
+                })
+
+        # Detect withdrawal (sudden drops)
+        withdrawal_signals = []
+        two_weeks = now - timedelta(days=14)
+        six_weeks = now - timedelta(days=42)
+
+        for pid, participations in all_participations.items():
+            recent = [p for p in participations
+                      if datetime.fromisoformat(p.get("timestamp", now.isoformat())) > two_weeks]
+            baseline = [p for p in participations
+                        if two_weeks >= datetime.fromisoformat(p.get("timestamp", now.isoformat())) > six_weeks]
+
+            if len(baseline) >= 2 and len(recent) == 0:
+                withdrawal_signals.append({
+                    "participant_id": pid,
+                    "baseline_events": len(baseline),
+                    "recent_events": 0,
+                    "message": "Sudden withdrawal detected"
+                })
+
+        # Build care network (co-participation)
+        co_participation = defaultdict(int)
+        for event in events:
+            pids = [p.get("participant_id") for p in event.get("participants", [])]
+            for i, p1 in enumerate(pids):
+                for p2 in pids[i+1:]:
+                    key = tuple(sorted([p1, p2]))
+                    co_participation[key] += 1
+
+        care_edges = [(k[0], k[1], v) for k, v in co_participation.items()]
+
+        # Find isolated participants
+        connected = set()
+        for k in co_participation.keys():
+            connected.add(k[0])
+            connected.add(k[1])
+        isolated = [pid for pid in participation_frequency.keys() if pid not in connected]
+
+        return {
+            "vessel_id": vessel_id,
+            "participation_frequency": dict(participation_frequency),
+            "participant_hours": dict(participant_hours),
+            "participant_kala": dict(participant_kala),
+            "burnout_risks": burnout_risks,
+            "withdrawal_signals": withdrawal_signals,
+            "care_network": {
+                "edges": care_edges,
+                "isolated": isolated,
+            },
+            "total_events": len(events),
+            "total_participants": len(participation_frequency),
+        }
+
+    async def save_kala_attractor_metrics(
+        self,
+        vessel_id: str,
+        metrics: dict,
+    ) -> None:
+        """Save attractor dynamics metrics for a vessel."""
+        content = json.dumps({
+            "type": VesselNodeType.KALA_ATTRACTOR.value,
+            "vessel_id": vessel_id,
+            "metrics": metrics,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"kala/attractors/{vessel_id}",
+            content,
+            content_type="kala"
+        )
+
+    async def load_kala_attractor_metrics(self, vessel_id: str) -> Optional[dict]:
+        """Load attractor metrics for a vessel."""
+        content = await self.get_content(f"kala/attractors/{vessel_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                return data.get("metrics")
+            except json.JSONDecodeError:
+                pass
+
+        return None
 
     # =========================================================================
     # Utility Methods

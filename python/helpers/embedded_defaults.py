@@ -699,6 +699,447 @@ def pca(data, components=2):
 }
 
 # =============================================================================
+# KALA DEFAULTS - Contribution Visibility System
+# =============================================================================
+
+KALA_DEFAULTS = {
+    "kala": {
+        "code_type": "module",
+        "code": '''
+"""
+Kala - Non-Currency Metric for Community Contribution Visibility
+
+Kala makes visible the patterns of community care, participation, and mutual aid.
+Unlike currencies, Kala cannot be exchanged, accumulated for leverage, or used as payment.
+It functions as collective memory - a ledger of responsibility that records who participated,
+what occurred, and when events took place.
+
+Key properties:
+- Non-transferable: Cannot be exchanged between individuals
+- Equal distribution: All participants receive equal Kala per event
+- Asymmetric visibility: AI agents see patterns, humans see only their own history
+- Memory, not medium: Records without creating tradable units
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
+import math
+
+
+# Base rate: all human participation valued equally
+KALA_PER_HOUR = 50.0
+
+
+class MultiplierType(str, Enum):
+    """Types of value multipliers for events."""
+    NUTRITION = "nutrition"       # Meals, food sharing
+    CULTURE = "culture"           # Storytelling, traditions
+    HEALTH = "health"             # Physical activity, wellness
+    ENVIRONMENT = "environment"   # Sustainable practice, land care
+    EDUCATION = "education"       # Skill sharing, learning
+    SOCIAL = "social"             # Connection, gathering
+    CARE = "care"                 # Caregiving, support
+    CREATION = "creation"         # Making, building
+
+
+@dataclass
+class KalaMultiplier:
+    """A multiplier that reflects collective benefits of an event."""
+    multiplier_type: MultiplierType
+    value: float = 1.0  # 1.0 = no multiplier, 2.0 = double value
+    description: str = ""
+
+    def to_dict(self):
+        return {"type": self.multiplier_type.value, "value": self.value, "description": self.description}
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(multiplier_type=MultiplierType(d["type"]), value=d.get("value", 1.0),
+                   description=d.get("description", ""))
+
+
+@dataclass
+class KalaParticipation:
+    """A participant's record at an event. Everyone gets equal Kala."""
+    participant_id: str
+    participant_type: str = "human"  # human, agent, proxy
+    hours: float = 0.0
+    kala_received: float = 0.0
+    timestamp: str = ""
+    role: str = ""  # optional: organizer, helper, observer, etc. (no effect on Kala)
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+
+    def to_dict(self):
+        return {"participant_id": self.participant_id, "participant_type": self.participant_type,
+                "hours": self.hours, "kala_received": self.kala_received,
+                "timestamp": self.timestamp, "role": self.role}
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)
+
+
+@dataclass
+class KalaEvent:
+    """
+    An event where Kala is generated and distributed equally.
+
+    Total Kala = participants × hours × KALA_PER_HOUR × multipliers
+    Each participant receives: Total Kala / participants
+    """
+    id: str
+    name: str
+    description: str = ""
+    hours: float = 0.0
+    participants: list = field(default_factory=list)  # list of KalaParticipation
+    multipliers: list = field(default_factory=list)   # list of KalaMultiplier
+    timestamp: str = ""
+    location: str = ""
+    vessel_id: str = ""  # which vessel/community this belongs to
+
+    # Computed values
+    base_kala: float = 0.0
+    total_kala: float = 0.0
+    kala_per_participant: float = 0.0
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+
+    def compute_kala(self) -> float:
+        """
+        Calculate and distribute Kala equally among all participants.
+
+        Formula: base = participants × hours × KALA_PER_HOUR
+        Total = base × product(multipliers)
+        Each participant gets: total / participants
+        """
+        n_participants = len(self.participants)
+        if n_participants == 0 or self.hours <= 0:
+            self.base_kala = 0.0
+            self.total_kala = 0.0
+            self.kala_per_participant = 0.0
+            return 0.0
+
+        # Base calculation
+        self.base_kala = n_participants * self.hours * KALA_PER_HOUR
+
+        # Apply multipliers
+        multiplier_product = 1.0
+        for m in self.multipliers:
+            mult = m.value if hasattr(m, "value") else m.get("value", 1.0)
+            multiplier_product *= mult
+
+        self.total_kala = self.base_kala * multiplier_product
+
+        # Equal distribution - the key architectural feature
+        self.kala_per_participant = self.total_kala / n_participants
+
+        # Update each participant's received Kala
+        for p in self.participants:
+            if hasattr(p, "kala_received"):
+                p.kala_received = self.kala_per_participant
+            elif isinstance(p, dict):
+                p["kala_received"] = self.kala_per_participant
+
+        return self.total_kala
+
+    def add_participant(self, participant_id: str, participant_type: str = "human", role: str = ""):
+        """Add a participant. Kala will be recomputed on next compute_kala() call."""
+        participation = KalaParticipation(
+            participant_id=participant_id,
+            participant_type=participant_type,
+            hours=self.hours,
+            role=role
+        )
+        self.participants.append(participation)
+        return participation
+
+    def add_multiplier(self, multiplier_type: MultiplierType, value: float, description: str = ""):
+        """Add a value multiplier for this event."""
+        multiplier = KalaMultiplier(multiplier_type=multiplier_type, value=value, description=description)
+        self.multipliers.append(multiplier)
+        return multiplier
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name, "description": self.description,
+            "hours": self.hours, "timestamp": self.timestamp, "location": self.location,
+            "vessel_id": self.vessel_id, "base_kala": self.base_kala,
+            "total_kala": self.total_kala, "kala_per_participant": self.kala_per_participant,
+            "participants": [p.to_dict() if hasattr(p, "to_dict") else p for p in self.participants],
+            "multipliers": [m.to_dict() if hasattr(m, "to_dict") else m for m in self.multipliers],
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        event = cls(
+            id=d["id"], name=d["name"], description=d.get("description", ""),
+            hours=d.get("hours", 0), timestamp=d.get("timestamp", ""),
+            location=d.get("location", ""), vessel_id=d.get("vessel_id", ""),
+        )
+        event.participants = [KalaParticipation.from_dict(p) for p in d.get("participants", [])]
+        event.multipliers = [KalaMultiplier.from_dict(m) for m in d.get("multipliers", [])]
+        event.base_kala = d.get("base_kala", 0)
+        event.total_kala = d.get("total_kala", 0)
+        event.kala_per_participant = d.get("kala_per_participant", 0)
+        return event
+
+
+# =============================================================================
+# Asymmetric Visibility - What different viewers can see
+# =============================================================================
+
+@dataclass
+class HumanView:
+    """
+    What a human participant sees - their own history only.
+    No rankings, no comparisons, no other individuals' data.
+    """
+    participant_id: str
+    total_kala: float = 0.0
+    event_count: int = 0
+    total_hours: float = 0.0
+    events: list = field(default_factory=list)  # their own participation records
+
+    # Aggregate community stats (anonymized)
+    community_total_kala: float = 0.0
+    community_event_count: int = 0
+    community_active_participants: int = 0  # just a count, no identities
+
+
+@dataclass
+class AgentView:
+    """
+    What AI coordination agents see - full patterns for community care.
+    Used to detect burnout, withdrawal, care network gaps.
+    Never exposed to humans directly.
+    """
+    vessel_id: str
+
+    # Participation patterns (for detecting burnout/withdrawal)
+    participation_frequency: dict = field(default_factory=dict)  # participant_id -> frequency
+    consistency_scores: dict = field(default_factory=dict)       # participant_id -> consistency
+    recent_changes: list = field(default_factory=list)           # sudden drops or spikes
+
+    # Care network topology
+    co_participation_graph: dict = field(default_factory=dict)   # who participates with whom
+    care_clusters: list = field(default_factory=list)            # natural groupings
+
+    # Health indicators
+    burnout_risks: list = field(default_factory=list)            # over-contributors
+    withdrawal_signals: list = field(default_factory=list)       # sudden participation drops
+    coverage_gaps: list = field(default_factory=list)            # areas needing attention
+
+
+# =============================================================================
+# Pattern Detection - Agent-only analysis
+# =============================================================================
+
+def compute_consistency_score(participation_history: list, window_days: int = 30) -> float:
+    """
+    Compute consistency score for a participant.
+    Higher = more regular participation. Used for detecting withdrawal.
+    """
+    if not participation_history:
+        return 0.0
+
+    # Count events in recent window
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=window_days)
+
+    recent = [p for p in participation_history
+              if datetime.fromisoformat(p.get("timestamp", p.timestamp if hasattr(p, "timestamp") else "")) > cutoff]
+
+    if not recent:
+        return 0.0
+
+    # Regularity = events per week
+    weeks = window_days / 7
+    events_per_week = len(recent) / weeks
+
+    # Normalize to 0-1 scale (assuming 2 events/week is "fully consistent")
+    return min(1.0, events_per_week / 2.0)
+
+
+def detect_burnout_risk(participant_id: str, history: list, threshold_hours: float = 20.0) -> dict:
+    """
+    Detect if a participant is at risk of burnout.
+    Triggered when recent contribution exceeds sustainable threshold.
+
+    Returns: {"at_risk": bool, "hours_recent": float, "message": str}
+    """
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
+
+    recent_hours = sum(
+        p.get("hours", 0) if isinstance(p, dict) else p.hours
+        for p in history
+        if datetime.fromisoformat(p.get("timestamp", "") if isinstance(p, dict) else p.timestamp) > week_ago
+    )
+
+    at_risk = recent_hours > threshold_hours
+
+    return {
+        "participant_id": participant_id,
+        "at_risk": at_risk,
+        "hours_recent": recent_hours,
+        "threshold": threshold_hours,
+        "message": f"High contribution detected ({recent_hours:.1f}h this week). Consider offering support."
+                   if at_risk else "Contribution level sustainable."
+    }
+
+
+def detect_withdrawal(participant_id: str, history: list, baseline_events: int = 4) -> dict:
+    """
+    Detect if a participant has suddenly withdrawn.
+    Compares recent activity to historical baseline.
+
+    Returns: {"withdrawn": bool, "drop_ratio": float, "message": str}
+    """
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+
+    # Last 2 weeks vs previous 4 weeks
+    two_weeks = now - timedelta(days=14)
+    six_weeks = now - timedelta(days=42)
+
+    recent = [p for p in history if datetime.fromisoformat(
+        p.get("timestamp", "") if isinstance(p, dict) else p.timestamp) > two_weeks]
+    baseline = [p for p in history if two_weeks >= datetime.fromisoformat(
+        p.get("timestamp", "") if isinstance(p, dict) else p.timestamp) > six_weeks]
+
+    baseline_rate = len(baseline) / 4  # events per week baseline
+    recent_rate = len(recent) / 2      # events per week recent
+
+    if baseline_rate == 0:
+        return {"participant_id": participant_id, "withdrawn": False, "drop_ratio": 0,
+                "message": "New or inactive participant."}
+
+    drop_ratio = 1 - (recent_rate / baseline_rate) if baseline_rate > 0 else 0
+    withdrawn = drop_ratio > 0.5 and len(recent) < baseline_events / 2
+
+    return {
+        "participant_id": participant_id,
+        "withdrawn": withdrawn,
+        "drop_ratio": drop_ratio,
+        "baseline_rate": baseline_rate,
+        "recent_rate": recent_rate,
+        "message": f"Participation dropped {drop_ratio*100:.0f}%. May need support or re-engagement."
+                   if withdrawn else "Participation within normal range."
+    }
+
+
+def build_care_network(events: list) -> dict:
+    """
+    Build a graph of who participates with whom.
+    Used to understand community structure and identify isolated individuals.
+
+    Returns: {"edges": [(id1, id2, weight)], "clusters": [...], "isolated": [...]}
+    """
+    from collections import defaultdict
+
+    # Count co-participations
+    co_participation = defaultdict(int)
+    participant_events = defaultdict(int)
+
+    for event in events:
+        participants = event.get("participants", []) if isinstance(event, dict) else event.participants
+        participant_ids = [
+            p.get("participant_id") if isinstance(p, dict) else p.participant_id
+            for p in participants
+        ]
+
+        for pid in participant_ids:
+            participant_events[pid] += 1
+
+        # Count pairs
+        for i, p1 in enumerate(participant_ids):
+            for p2 in participant_ids[i+1:]:
+                key = tuple(sorted([p1, p2]))
+                co_participation[key] += 1
+
+    # Build edges with weights
+    edges = [(k[0], k[1], v) for k, v in co_participation.items()]
+
+    # Find isolated (participated but rarely with others)
+    isolated = [pid for pid, count in participant_events.items()
+                if not any(pid in k for k in co_participation.keys())]
+
+    return {
+        "edges": edges,
+        "participant_event_counts": dict(participant_events),
+        "isolated": isolated,
+    }
+
+
+# =============================================================================
+# Attractor Dynamics - How Kala shapes community behavior
+# =============================================================================
+
+@dataclass
+class AttractorMetrics:
+    """
+    Metrics that reveal attractor dynamics in the community.
+    Used to understand if the vessel is trending toward generosity/trust
+    or toward fragmentation/hierarchy.
+    """
+    vessel_id: str
+    timestamp: str = ""
+
+    # Generosity spiral indicator
+    generosity_trend: float = 0.0  # positive = growing generosity
+
+    # Trust accumulation
+    network_density: float = 0.0   # how connected is the care network
+
+    # Hierarchy dissipation
+    gini_coefficient: float = 0.0  # 0 = perfect equality, 1 = one person has all
+
+    # Burnout prevention
+    sustainable_ratio: float = 0.0  # ratio of participants within sustainable contribution
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+
+
+def compute_gini_coefficient(kala_totals: list) -> float:
+    """
+    Compute Gini coefficient for Kala distribution.
+    In a healthy Kala system, this should stay low (everyone participates roughly equally).
+    High Gini might indicate some are contributing way more than others (burnout risk).
+    """
+    if not kala_totals or len(kala_totals) < 2:
+        return 0.0
+
+    sorted_totals = sorted(kala_totals)
+    n = len(sorted_totals)
+    total = sum(sorted_totals)
+
+    if total == 0:
+        return 0.0
+
+    # Gini formula
+    cumsum = 0
+    for i, x in enumerate(sorted_totals):
+        cumsum += (n - i) * x
+
+    gini = (2 * cumsum) / (n * total) - (n + 1) / n
+    return max(0.0, min(1.0, gini))
+''',
+    },
+}
+
+
+# =============================================================================
 # COMBINED DEFAULTS - All content merged
 # =============================================================================
 
@@ -708,6 +1149,7 @@ def get_all_defaults():
     all_defaults.update(TOOL_DEFAULTS)
     all_defaults.update(EXTENSION_DEFAULTS)
     all_defaults.update(MORAL_GEOMETRY_DEFAULTS)
+    all_defaults.update(KALA_DEFAULTS)
     return all_defaults
 
 def get_prompt_defaults():
