@@ -63,6 +63,14 @@ class ContentCache:
         try:
             from python.helpers.graph_store import get_graph_store
             store = await get_graph_store()
+
+            # Ensure canvas prompts are stored
+            try:
+                from python.helpers.canvas_prompts import store_canvas_prompts
+                await store_canvas_prompts()
+            except Exception:
+                pass  # Canvas prompts are optional
+
             content_map = await store.get_all_content()
             self._cache = content_map
             self._loaded = True
