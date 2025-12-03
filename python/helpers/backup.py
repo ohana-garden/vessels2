@@ -60,6 +60,9 @@ class BackupService:
         # Ensure paths don't have double slashes
         agent_root = self.agent_zero_root.rstrip('/')
 
+        # NOTE: Settings, chats, and scheduler data are now stored in FalkorDB graph.
+        # Use GraphStore.export_all_data() for full database backup.
+        # File patterns below are for filesystem-based content only.
         return f"""# Agent Zero Knowledge (excluding defaults)
 {agent_root}/knowledge/**
 !{agent_root}/knowledge/default/**
@@ -68,19 +71,11 @@ class BackupService:
 {agent_root}/instruments/**
 !{agent_root}/instruments/default/**
 
-# Memory (excluding embeddings cache)
-{agent_root}/memory/**
-!{agent_root}/memory/**/embeddings/**
-
-# Configuration and Settings (CRITICAL)
+# Environment configuration (API keys, etc.)
 {agent_root}/.env
-{agent_root}/tmp/settings.json
-{agent_root}/tmp/secrets.env
-{agent_root}/tmp/chats/**
-{agent_root}/tmp/scheduler/**
-{agent_root}/tmp/uploads/**
 
-# User data
+# User uploads and data
+{agent_root}/tmp/uploads/**
 {agent_root}/usr/**
 """
 
