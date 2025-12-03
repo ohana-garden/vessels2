@@ -1,55 +1,54 @@
 ### code_search
-Search, retrieve, write, and execute code stored in FalkorDB. This is your primary interface for managing your own codebase.
+Agentic code discovery and execution. Find code by intent, not by path. All code lives in FalkorDB.
 
 **Operations:**
-- `search`: Find code by natural language description
-- `get`: Get full code content by path
-- `list`: List all stored code of a type
-- `store`: Write new code to the database
+- `run_tool`: Find and execute a tool by describing what it should do
+- `run_instrument`: Find and execute an instrument by intent
+- `create_tool`: Create a new tool
+- `create_instrument`: Create a new instrument
+- `search`: Find code by description
+- `get`: Get code content by path
+- `list`: List all code of a type
+- `store`: Write code to database
 - `update`: Update existing code
-- `delete`: Delete code from the database
-- `execute`: Execute stored code
-- `run_function`: Run a specific function from stored code
-- `find_tool`: Find a tool by description
-- `find_instrument`: Find an instrument by description
+- `delete`: Delete code
+- `execute`: Execute code by path
 
 **Arguments:**
 - `operation`: (required) One of the operations above
-- `query`: Search query (for search operations)
-- `description`: What you're looking for (for find_* operations)
-- `path`: Virtual file path (e.g., "python/tools/my_tool.py")
-- `content`: Python code content (for store/update)
+- `intent`: What the code should do (for run_tool, run_instrument)
+- `name`: Name for new tool/instrument (for create_*)
+- `description`: Description of what code does
+- `code`: Python code content
+- `query`: Search query
+- `path`: Code path (when known)
 - `code_type`: tool, extension, helper, api, instrument, script
-- `function`: Function name (for run_function)
-- `args`: List of arguments (for run_function)
-- `limit`: Max search results (default 10)
 
-**Examples:**
+**Agentic Examples:**
 ~~~json
-// Search for code that handles browser automation
-{"tool_name": "code_search", "tool_args": {"operation": "search", "query": "browser automation", "code_type": "tool"}}
+// Find and run a tool by intent (no path needed!)
+{"tool_name": "code_search", "tool_args": {"operation": "run_tool", "intent": "execute shell commands", "command": "ls -la"}}
 
-// Get code content
-{"tool_name": "code_search", "tool_args": {"operation": "get", "path": "python/tools/browser_agent.py"}}
+// Find and run an instrument by intent
+{"tool_name": "code_search", "tool_args": {"operation": "run_instrument", "intent": "parse JSON data", "data": "{\"key\": \"value\"}"}}
 
-// Store a new tool
-{"tool_name": "code_search", "tool_args": {"operation": "store", "path": "python/tools/my_new_tool.py", "content": "from python.helpers.tool import Tool, Response\n\nclass MyNewTool(Tool):\n    async def execute(self, **kwargs) -> Response:\n        return Response(message='Hello!', break_loop=False)", "code_type": "tool", "description": "A simple greeting tool"}}
+// Create a new tool
+{"tool_name": "code_search", "tool_args": {"operation": "create_tool", "name": "greeter", "description": "Says hello", "code": "from python.helpers.tool import Tool, Response\n\nclass Greeter(Tool):\n    async def execute(self, name='World', **kwargs) -> Response:\n        return Response(message=f'Hello, {name}!', break_loop=False)"}}
 
-// Update existing code
-{"tool_name": "code_search", "tool_args": {"operation": "update", "path": "python/tools/my_tool.py", "content": "..."}}
-
-// Execute stored code
-{"tool_name": "code_search", "tool_args": {"operation": "execute", "path": "instruments/my_script.py"}}
-
-// Run a specific function
-{"tool_name": "code_search", "tool_args": {"operation": "run_function", "path": "python/helpers/utils.py", "function": "calculate", "args": [1, 2, 3]}}
-
-// List all tools
-{"tool_name": "code_search", "tool_args": {"operation": "list", "code_type": "tool"}}
+// Create a new instrument
+{"tool_name": "code_search", "tool_args": {"operation": "create_instrument", "name": "data_processor", "description": "Processes data files", "code": "def run(data):\n    return data.upper()"}}
 ~~~
 
-**Important:** All code is stored in FalkorDB, not the filesystem. Use this tool to:
-1. Find existing code before writing new code
-2. Retrieve code you need to modify or learn from
-3. Store new tools, instruments, or helpers you create
-4. Execute code dynamically
+**Traditional Examples:**
+~~~json
+// Search for code
+{"tool_name": "code_search", "tool_args": {"operation": "search", "query": "browser automation", "code_type": "tool"}}
+
+// Get code by path
+{"tool_name": "code_search", "tool_args": {"operation": "get", "path": "python/tools/browser_agent.py"}}
+
+// List all instruments
+{"tool_name": "code_search", "tool_args": {"operation": "list", "code_type": "instrument"}}
+~~~
+
+**Key Principle:** Discover code by *intent*, not by file path. Describe what you need and the system finds it.
