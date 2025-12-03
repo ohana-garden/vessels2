@@ -23,10 +23,17 @@ import threading
 # Content Cache - Loads content from FalkorDB for DB-first file reading
 # =============================================================================
 
+# Import embedded defaults for prompts
+from python.helpers.embedded_defaults import get_prompt_defaults
+
+_PROMPT_DEFAULTS = get_prompt_defaults()
+
+
 class ContentCache:
     """
     Cache for file content loaded from FalkorDB.
-    Provides DB-first file reading with filesystem fallback.
+    DB only - no filesystem fallback. FalkorDB required.
+    Falls back to embedded defaults for prompts if not in DB.
     """
 
     _instance: Optional["ContentCache"] = None
@@ -63,12 +70,20 @@ class ContentCache:
         try:
             from python.helpers.graph_store import get_graph_store
             store = await get_graph_store()
+
+            # Ensure canvas prompts are stored
+            try:
+                from python.helpers.canvas_prompts import store_canvas_prompts
+                await store_canvas_prompts()
+            except Exception:
+                pass  # Canvas prompts are optional
+
             content_map = await store.get_all_content()
             self._cache = content_map
             self._loaded = True
             return len(content_map)
         except Exception:
-            # DB not available, use filesystem
+            # DB not available - this is an error in DB-only mode
             self._loaded = False
             return 0
 
@@ -88,9 +103,13 @@ class ContentCache:
             return 0
 
     def get(self, path: str) -> Optional[str]:
-        """Get content by path. Returns None if not found."""
+        """Get content by path. Lazy-loads from DB on first access."""
         if not self._enabled:
             return None
+
+        # Lazy load from DB if not loaded yet
+        if not self._loaded:
+            self.load_from_db_sync()
 
         # Normalize path
         path = path.replace("\\", "/").lstrip("/")
@@ -99,7 +118,63 @@ class ContentCache:
         if path in self._cache:
             return self._cache[path]
 
+        # Try loading single item from DB if not in cache
+        content = self._load_single_from_db(path)
+        if content is not None:
+            self._cache[path] = content
+            return content
+
+        # Fall back to embedded defaults for prompts
+        content = self._get_from_defaults(path)
+        if content is not None:
+            self._cache[path] = content
+            # Also seed to DB for persistence
+            self._seed_to_db(path, content)
+            return content
+
         return None
+
+    def _load_single_from_db(self, path: str) -> Optional[str]:
+        """Load a single content item from DB."""
+        try:
+            from python.helpers.graph_store import get_graph_store
+            loop = asyncio.new_event_loop()
+            store = loop.run_until_complete(get_graph_store())
+            content = loop.run_until_complete(store.get_content(path))
+            loop.close()
+            return content
+        except Exception:
+            return None
+
+    def _get_from_defaults(self, path: str) -> Optional[str]:
+        """Get content from embedded defaults."""
+        # Try exact path match for prompts
+        if path in _PROMPT_DEFAULTS:
+            return _PROMPT_DEFAULTS[path]
+
+        # Try with prompts/ prefix removed
+        if path.startswith("prompts/"):
+            key = path[8:]  # Remove "prompts/" prefix
+            if key in _PROMPT_DEFAULTS:
+                return _PROMPT_DEFAULTS[key]
+
+        # Try filename only (for backward compatibility)
+        filename = os.path.basename(path)
+        if filename in _PROMPT_DEFAULTS:
+            return _PROMPT_DEFAULTS[filename]
+
+        return None
+
+    def _seed_to_db(self, path: str, content: str) -> None:
+        """Seed content to DB for persistence (fire and forget)."""
+        try:
+            from python.helpers.graph_store import get_graph_store
+            loop = asyncio.new_event_loop()
+            store = loop.run_until_complete(get_graph_store())
+            loop.run_until_complete(store.save_content(path, content, content_type="prompt"))
+            loop.close()
+        except Exception:
+            pass  # Non-critical, content still available from defaults
 
     def set(self, path: str, content: str) -> None:
         """Set content in cache."""
@@ -107,11 +182,14 @@ class ContentCache:
         self._cache[path] = content
 
     def has(self, path: str) -> bool:
-        """Check if path exists in cache."""
+        """Check if path exists in cache or defaults."""
         if not self._enabled:
             return False
         path = path.replace("\\", "/").lstrip("/")
-        return path in self._cache
+        if path in self._cache:
+            return True
+        # Check embedded defaults
+        return self._get_from_defaults(path) is not None
 
     def clear(self) -> None:
         """Clear the cache."""
@@ -231,6 +309,7 @@ def parse_file(
 def read_prompt_file(
     _file: str, _directories: list[str] | None = None, _encoding="utf-8", **kwargs
 ):
+    """Read prompt from DB. No filesystem fallback."""
     if _directories is None:
         _directories = []
 
@@ -241,81 +320,67 @@ def read_prompt_file(
         _directories = [folder_path] + _directories
 
     content = None
-    absolute_path = None
+    base_dir = get_base_dir()
 
-    # Try content cache first (DB-first approach)
+    # Load from DB via content cache
     cache = get_content_cache()
-    if cache.is_loaded():
-        # Try each directory to find content in cache
-        for directory in _directories:
-            rel_path = os.path.join(directory, _file).replace("\\", "/")
-            # Convert absolute to relative if needed
-            base_dir = get_base_dir()
-            if rel_path.startswith(base_dir):
-                rel_path = os.path.relpath(rel_path, base_dir).replace("\\", "/")
-            elif rel_path.startswith("/"):
-                rel_path = rel_path.lstrip("/")
 
-            cached = cache.get(rel_path)
-            if cached is not None:
-                content = cached
-                absolute_path = os.path.join(base_dir, rel_path)
-                break
+    # Try each directory to find content
+    for directory in _directories:
+        rel_path = os.path.join(directory, _file).replace("\\", "/")
+        # Convert absolute to relative if needed
+        if rel_path.startswith(base_dir):
+            rel_path = os.path.relpath(rel_path, base_dir).replace("\\", "/")
+        elif rel_path.startswith("/"):
+            rel_path = rel_path.lstrip("/")
 
-    # Fallback to filesystem if not in cache
+        cached = cache.get(rel_path)
+        if cached is not None:
+            content = cached
+            break
+
     if content is None:
-        absolute_path = find_file_in_dirs(_file, _directories)
-        with open(absolute_path, "r", encoding=_encoding) as f:
-            content = f.read()
+        raise FileNotFoundError(f"Prompt not found in DB: {_file} (searched: {_directories})")
 
-    variables = load_plugin_variables(_file, _directories, **kwargs) or {}  # type: ignore
+    variables = load_plugin_variables(_file, _directories, **kwargs) or {}
     variables.update(kwargs)
 
-    # Replace placeholders with values from kwargs
     content = replace_placeholders_text(content, **variables)
-
-    # Process include statements
-    content = process_includes(
-        # here we use kwargs, the plugin variables are not inherited
-        content,
-        _directories,
-        **kwargs,
-    )
+    content = process_includes(content, _directories, **kwargs)
 
     return content
 
 
 def read_file(relative_path: str, encoding="utf-8"):
-    # Try content cache first for .md files
-    if relative_path.endswith(".md"):
-        cache = get_content_cache()
-        if cache.is_loaded():
-            cached = cache.get(relative_path)
-            if cached is not None:
-                return cached
-
-    # Fallback to filesystem
-    absolute_path = get_abs_path(relative_path)
-    with open(absolute_path, "r", encoding=encoding) as f:
-        return f.read()
+    """Read file from DB."""
+    cache = get_content_cache()
+    cached = cache.get(relative_path)
+    if cached is not None:
+        return cached
+    raise FileNotFoundError(f"Not in DB: {relative_path}")
 
 
 def read_file_bin(relative_path: str):
-    # Try to get the absolute path for the file from the original directory or backup directories
-    absolute_path = get_abs_path(relative_path)
-
-    # read binary content
-    with open(absolute_path, "rb") as f:
-        return f.read()
+    """Read binary file from DB (stored as base64)."""
+    cache = get_content_cache()
+    cached = cache.get(relative_path)
+    if cached is not None:
+        # Binary content stored as base64 in DB
+        if cached.startswith("base64:"):
+            return base64.b64decode(cached[7:])
+        return cached.encode()
+    raise FileNotFoundError(f"Not in DB: {relative_path}")
 
 
 def read_file_base64(relative_path):
-    # get absolute path
-    absolute_path = get_abs_path(relative_path)
-
-    # read binary content and encode to base64
-    with open(absolute_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+    """Read file from DB as base64."""
+    cache = get_content_cache()
+    cached = cache.get(relative_path)
+    if cached is not None:
+        if cached.startswith("base64:"):
+            return cached[7:]
+        return base64.b64encode(cached.encode()).decode("utf-8")
+    raise FileNotFoundError(f"Not in DB: {relative_path}")
 
 
 # =============================================================================

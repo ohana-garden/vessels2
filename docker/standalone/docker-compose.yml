@@ -1,30 +1,61 @@
 # Vessels All-in-One Container
 # For Windows 11 Docker Desktop
 #
-# Usage:
-#   docker compose up -d
-#   Open http://localhost:8080
+# Quick Start:
+#   1. Run setup.bat (Windows) or setup.ps1 (PowerShell)
+#   2. Open http://localhost:8080
+#
+# Manual Start:
+#   1. Copy .env.example to .env and add your API keys
+#   2. Run: docker compose up -d
+#   3. Open http://localhost:8080
 
 services:
   vessels:
     build:
       context: ../..
       dockerfile: docker/standalone/Dockerfile
+    image: vessels:latest
     container_name: vessels
     ports:
       - "8080:80"
     volumes:
+      # Persistent data storage
       - vessels-data:/data/falkordb
       - vessels-tb:/data/tigerbeetle
       - vessels-work:/vessels/work_dir
+      # Mount .env file if it exists (for API keys)
+      - ./.env:/vessels/.env:ro
     environment:
+      # LLM API Keys (loaded from .env file)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Graphiti Knowledge Graph Configuration
       - GRAPHITI_LLM_PROVIDER=${GRAPHITI_LLM_PROVIDER:-openai}
       - GRAPHITI_LLM_MODEL=${GRAPHITI_LLM_MODEL:-gpt-4o-mini}
+      # Hume AI Voice Integration (optional)
+      - HUME_API_KEY=${HUME_API_KEY:-}
+      - HUME_SECRET_KEY=${HUME_SECRET_KEY:-}
+      # Internal service configuration
+      - FALKORDB_HOST=localhost
+      - FALKORDB_PORT=6379
+      - FALKORDB_DATABASE=vessels
+      - TIGERBEETLE_HOST=localhost
+      - TIGERBEETLE_PORT=3000
+      - WEB_UI_HOST=0.0.0.0
+      - WEB_UI_PORT=80
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 volumes:
   vessels-data:
+    name: vessels-falkordb-data
   vessels-tb:
+    name: vessels-tigerbeetle-data
   vessels-work:
+    name: vessels-work-dir

@@ -1,5 +1,6 @@
 from python.helpers.memory import Memory
 from python.helpers.tool import Tool, Response
+from python.helpers.guardians import guard_memory
 
 DEFAULT_THRESHOLD = 0.7
 DEFAULT_LIMIT = 10
@@ -15,6 +16,7 @@ class MemoryLoad(Tool):
             result = self.agent.read_prompt("fw.memories_not_found.md", query=query)
         else:
             text = "\n\n".join(Memory.format_docs_plain(docs))
-            result = str(text)
+            # Guard memory output - stored data may contain injection patterns
+            result = guard_memory(str(text), source="memory_load_tool")
 
         return Response(message=result, break_loop=False)

@@ -6,6 +6,7 @@ import sys
 from typing import Optional, Tuple
 from python.helpers import tty_session, runtime
 from python.helpers.shell_ssh import clean_string
+from python.helpers.guardians import guard_tool
 
 class LocalInteractiveSession:
     def __init__(self, cwd: str|None = None):
@@ -43,6 +44,10 @@ class LocalInteractiveSession:
         # clean output
         partial_output = clean_string(partial_output)
         clean_full_output = clean_string(self.full_output)
+
+        # Guard shell output - command results may contain injection attempts
+        clean_full_output = guard_tool(clean_full_output, source="shell_local")
+        partial_output = guard_tool(partial_output, source="shell_local") if partial_output else partial_output
 
         if not partial_output:
             return clean_full_output, None
