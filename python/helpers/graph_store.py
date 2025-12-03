@@ -115,6 +115,12 @@ class VesselNodeType(str, Enum):
     STORY = "story"                         # Defining narratives
     BOUNDARY = "boundary"                   # Entity limits and edges
     CYCLE = "cycle"                         # Rhythms and patterns
+    # Spider Discovery types - Tool and API Discovery
+    DISCOVERED_API = "discovered_api"       # API specifications discovered via spidering
+    DISCOVERED_TOOL = "discovered_tool"     # Tools discovered from MCP registries/docs
+    CRAWL_SOURCE = "crawl_source"           # Monitored web sources for discovery
+    CRAWL_EVENT = "crawl_event"             # Record of a crawl operation
+    REGISTERED_TOOL = "registered_tool"     # Tools registered from discoveries
 
 
 class MemoryArea(str, Enum):
@@ -123,6 +129,7 @@ class MemoryArea(str, Enum):
     FRAGMENTS = "fragments"
     SOLUTIONS = "solutions"
     INSTRUMENTS = "instruments"
+    DISCOVERIES = "discoveries"  # Spider discoveries - APIs, tools, sources
 
 
 class MoralGeometryArea(str, Enum):
