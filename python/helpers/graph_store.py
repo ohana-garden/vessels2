@@ -39,6 +39,7 @@ except ImportError:
     FalkorDriver = None
 
 from python.helpers.print_style import PrintStyle
+from python.helpers.guardians import guard_memory
 
 
 # =============================================================================
@@ -343,9 +344,12 @@ class GraphStore:
         # Convert to legacy format
         memories = []
         for result in results:
+            content = result.fact if hasattr(result, 'fact') else str(result)
+            # Guard memory content - stored data may contain injection patterns
+            content = guard_memory(content, source="graph_store:memories")
             memories.append({
                 "id": result.uuid,
-                "content": result.fact if hasattr(result, 'fact') else str(result),
+                "content": content,
                 "score": getattr(result, 'score', 1.0),
                 "metadata": {
                     "area": area.value if area else "main",
@@ -657,9 +661,12 @@ class GraphStore:
 
         knowledge_items = []
         for result in results:
+            content = result.fact if hasattr(result, 'fact') else str(result)
+            # Guard knowledge content - stored data may contain injection patterns
+            content = guard_memory(content, source="graph_store:knowledge")
             knowledge_items.append({
                 "id": result.uuid,
-                "content": result.fact if hasattr(result, 'fact') else str(result),
+                "content": content,
                 "score": getattr(result, 'score', 1.0),
             })
 

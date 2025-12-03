@@ -1,6 +1,7 @@
 import uuid
 from typing import Any, Dict, List, Optional
 from python.helpers.print_style import PrintStyle
+from python.helpers.guardians import guard_agent
 
 try:
     from fasta2a.client import A2AClient  # type: ignore
@@ -53,6 +54,11 @@ class AgentConnection:
                 response = await self._http_client.get(f"{self.agent_url}/.well-known/agent.json")
                 response.raise_for_status()
                 self._agent_card = response.json()
+                # Guard agent card fields - remote agent may attempt injection
+                if isinstance(self._agent_card, dict):
+                    for key in ["name", "description"]:
+                        if key in self._agent_card and isinstance(self._agent_card[key], str):
+                            self._agent_card[key] = guard_agent(self._agent_card[key], source=f"agent_card:{self.agent_url}")
                 _PRINTER.print(f"Retrieved agent card from {self.agent_url}")
                 _PRINTER.print(f"Agent: {self._agent_card.get('name', 'Unknown')}") # type: ignore
                 _PRINTER.print(f"Description: {self._agent_card.get('description', 'No description')}") # type: ignore
@@ -64,6 +70,11 @@ class AgentConnection:
                         response = await self._http_client.get(f"{root_url}/.well-known/agent.json")
                         response.raise_for_status()
                         self._agent_card = response.json()
+                        # Guard agent card fields
+                        if isinstance(self._agent_card, dict):
+                            for key in ["name", "description"]:
+                                if key in self._agent_card and isinstance(self._agent_card[key], str):
+                                    self._agent_card[key] = guard_agent(self._agent_card[key], source=f"agent_card:{root_url}")
                         _PRINTER.print(f"Retrieved agent card from {root_url}")
                     except Exception:
                         pass  # swallow, will re-raise below

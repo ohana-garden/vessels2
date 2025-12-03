@@ -5,6 +5,7 @@ import re
 from typing import Tuple
 from python.helpers.log import Log
 from python.helpers.print_style import PrintStyle
+from python.helpers.guardians import guard_tool
 # from python.helpers.strings import calculate_valid_match_lengths
 
 
@@ -162,6 +163,10 @@ class SSHInteractiveSession:
 
         decoded_partial_output = clean_string(decoded_partial_output)
         decoded_full_output = clean_string(decoded_full_output)
+
+        # Guard SSH output - remote command results may contain injection attempts
+        decoded_full_output = guard_tool(decoded_full_output, source="shell_ssh")
+        decoded_partial_output = guard_tool(decoded_partial_output, source="shell_ssh") if decoded_partial_output else decoded_partial_output
 
         return decoded_full_output, decoded_partial_output
 

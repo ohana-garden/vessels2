@@ -24,6 +24,7 @@ from langchain.schema import SystemMessage, HumanMessage
 
 from python.helpers.print_style import PrintStyle
 from python.helpers import files, errors
+from python.helpers.guardians import guard_web, guard_file
 from agent import Agent
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -555,10 +556,15 @@ class DocumentQueryHelper:
         if scheme in ["http", "https"]:
             loader = AsyncHtmlLoader(web_path=document)
             parts: list[Document] = loader.load()
+            # Guard web content
+            for part in parts:
+                part.page_content = guard_web(part.page_content, source=f"web_html:{document}")
         elif scheme == "file":
             # Use RFC file operations instead of TextLoader
             file_content_bytes = files.read_file_bin(document)
             file_content = file_content_bytes.decode("utf-8")
+            # Guard file content
+            file_content = guard_file(file_content, source=f"file_html:{document}")
             # Create Document manually since we're not using TextLoader
             parts = [Document(page_content=file_content, metadata={"source": document})]
         else:
@@ -575,10 +581,15 @@ class DocumentQueryHelper:
         if scheme in ["http", "https"]:
             loader = AsyncHtmlLoader(web_path=document)
             elements: list[Document] = loader.load()
+            # Guard web content
+            for element in elements:
+                element.page_content = guard_web(element.page_content, source=f"web_text:{document}")
         elif scheme == "file":
             # Use RFC file operations instead of TextLoader
             file_content_bytes = files.read_file_bin(document)
             file_content = file_content_bytes.decode("utf-8")
+            # Guard file content
+            file_content = guard_file(file_content, source=f"file_text:{document}")
             # Create Document manually since we're not using TextLoader
             elements = [
                 Document(page_content=file_content, metadata={"source": document})
@@ -652,6 +663,11 @@ class DocumentQueryHelper:
                 for page in pages:
                     contents += pytesseract.image_to_string(page) + "\n\n"
 
+            # Guard PDF content based on source
+            if scheme in ["http", "https"]:
+                contents = guard_web(contents, source=f"web_pdf:{document}")
+            else:
+                contents = guard_file(contents, source=f"file_pdf:{document}")
             return contents
         finally:
             os.unlink(temp_file_path)
@@ -668,6 +684,9 @@ class DocumentQueryHelper:
                 strategy="hi_res",
             )
             elements = loader.load()
+            # Guard web content
+            for element in elements:
+                element.page_content = guard_web(element.page_content, source=f"web_unstructured:{document}")
         elif scheme == "file":
             # Use RFC file operations to read the file as binary
             file_content_bytes = files.read_file_bin(document)
@@ -690,6 +709,9 @@ class DocumentQueryHelper:
                     strategy="hi_res",
                 )
                 elements = loader.load()
+                # Guard file content
+                for element in elements:
+                    element.page_content = guard_file(element.page_content, source=f"file_unstructured:{document}")
             finally:
                 # Clean up temporary file
                 os.unlink(temp_file_path)

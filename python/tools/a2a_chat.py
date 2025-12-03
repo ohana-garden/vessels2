@@ -1,6 +1,7 @@
 from python.helpers.tool import Tool, Response
 from python.helpers.print_style import PrintStyle
 from python.helpers.fasta2a_client import connect_to_agent, is_client_available
+from python.helpers.guardians import guard_agent
 
 
 class A2AChatTool(Tool):
@@ -47,7 +48,9 @@ class A2AChatTool(Tool):
                     assistant_text = "\n".join(
                         p.get("text", "") for p in last_parts if p.get("kind") == "text"
                     )
-                return Response(message=assistant_text or "(no response)", break_loop=False)
+                # Guard agent response - external agent may attempt injection
+                guarded_response = guard_agent(assistant_text, source=f"a2a:{agent_url}") if assistant_text else "(no response)"
+                return Response(message=guarded_response, break_loop=False)
         except Exception as e:
             PrintStyle.error(f"A2A chat error: {e}")
             return Response(message=f"A2A chat error: {e}", break_loop=False)

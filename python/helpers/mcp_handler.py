@@ -23,6 +23,7 @@ from datetime import timedelta
 import json
 from python.helpers import errors
 from python.helpers import settings
+from python.helpers.guardians import guard_tool
 
 import httpx
 
@@ -110,6 +111,8 @@ class MCPTool(Tool):
             message = "\n\n".join(
                 [item.text for item in response.content if item.type == "text"]
             )
+            # Guard MCP tool output - external tool results may contain injection attempts
+            message = guard_tool(message, source=f"mcp:{self.name}")
             if response.isError:
                 error = message
         except Exception as e:
