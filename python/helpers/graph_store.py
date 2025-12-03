@@ -91,6 +91,30 @@ class VesselNodeType(str, Enum):
     TASK = "task"
     CODE = "code"           # Reusable code snippets for agentic execution
     EXECUTION = "execution" # Execution history and results
+    # Moral Geometry types
+    MORAL_VECTOR = "moral_vector"
+    MORAL_TRAJECTORY = "moral_trajectory"
+    SPECTRAL_DECOMPOSITION = "spectral_decomposition"
+    MORAL_DISTANCE = "moral_distance"
+    # Kala types - Contribution Visibility
+    KALA_EVENT = "kala_event"
+    KALA_PARTICIPATION = "kala_participation"
+    KALA_PATTERN = "kala_pattern"
+    KALA_ATTRACTOR = "kala_attractor"
+    # Persona & Voice types - Agent Identity
+    PERSONA = "persona"
+    VOICE_PROFILE = "voice_profile"
+    VOICE_SESSION = "voice_session"
+    EMOTIONAL_STATE = "emotional_state"
+    HUME_CONFIG = "hume_config"
+    # Entity Ontology types - Universal Entities
+    ENTITY = "entity"                       # Universal entity persona
+    ELICITATION_SESSION = "elicitation_session"  # Persona discovery session
+    SPOKESPERSON = "spokesperson"           # Who speaks for non-self-voiced entities
+    SENSOR_SOURCE = "sensor_source"         # Data streams representing entities
+    STORY = "story"                         # Defining narratives
+    BOUNDARY = "boundary"                   # Entity limits and edges
+    CYCLE = "cycle"                         # Rhythms and patterns
 
 
 class MemoryArea(str, Enum):
@@ -99,6 +123,14 @@ class MemoryArea(str, Enum):
     FRAGMENTS = "fragments"
     SOLUTIONS = "solutions"
     INSTRUMENTS = "instruments"
+
+
+class MoralGeometryArea(str, Enum):
+    """Storage areas for moral geometry data."""
+    VECTORS = "vectors"
+    TRAJECTORIES = "trajectories"
+    DECOMPOSITIONS = "decompositions"
+    DISTANCES = "distances"
 
 
 # =============================================================================
@@ -808,6 +840,1363 @@ class GraphStore:
                     pass
 
         return content_map
+
+    # =========================================================================
+    # Moral Geometry Operations
+    # =========================================================================
+
+    async def save_moral_vector(
+        self,
+        vector_id: str,
+        vector_data: dict,
+        agent_id: str = "default",
+    ) -> str:
+        """
+        Save a moral vector to the graph.
+
+        Args:
+            vector_id: Unique identifier for the vector
+            vector_data: Dict containing moral vector data
+            agent_id: Agent that created/owns this vector
+
+        Returns: The vector ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.MORAL_VECTOR.value,
+            "agent_id": agent_id,
+            "data": vector_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"moral/vectors/{vector_id}",
+            content,
+            content_type="moral_geometry"
+        )
+
+        return vector_id
+
+    async def load_moral_vector(self, vector_id: str) -> Optional[dict]:
+        """Load a moral vector from the graph."""
+        content = await self.get_content(f"moral/vectors/{vector_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.MORAL_VECTOR.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def save_moral_trajectory(
+        self,
+        trajectory_id: str,
+        trajectory_data: dict,
+        entity_id: str = "default",
+    ) -> str:
+        """
+        Save a moral trajectory to the graph.
+
+        Args:
+            trajectory_id: Unique identifier for the trajectory
+            trajectory_data: Dict containing trajectory data with waypoints
+            entity_id: Entity (agent, action sequence) being tracked
+
+        Returns: The trajectory ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.MORAL_TRAJECTORY.value,
+            "entity_id": entity_id,
+            "data": trajectory_data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"moral/trajectories/{trajectory_id}",
+            content,
+            content_type="moral_geometry"
+        )
+
+        return trajectory_id
+
+    async def load_moral_trajectory(self, trajectory_id: str) -> Optional[dict]:
+        """Load a moral trajectory from the graph."""
+        content = await self.get_content(f"moral/trajectories/{trajectory_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.MORAL_TRAJECTORY.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def save_spectral_decomposition(
+        self,
+        decomposition_id: str,
+        decomposition_data: dict,
+        source_vectors: list[str] = None,
+    ) -> str:
+        """
+        Save a spectral decomposition to the graph.
+
+        Args:
+            decomposition_id: Unique identifier
+            decomposition_data: Dict containing eigenvalues, eigenvectors, harmonics
+            source_vectors: IDs of vectors used in decomposition
+
+        Returns: The decomposition ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.SPECTRAL_DECOMPOSITION.value,
+            "source_vectors": source_vectors or [],
+            "data": decomposition_data,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"moral/spectral/{decomposition_id}",
+            content,
+            content_type="moral_geometry"
+        )
+
+        return decomposition_id
+
+    async def load_spectral_decomposition(self, decomposition_id: str) -> Optional[dict]:
+        """Load a spectral decomposition from the graph."""
+        content = await self.get_content(f"moral/spectral/{decomposition_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.SPECTRAL_DECOMPOSITION.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def search_moral_vectors(
+        self,
+        query: str,
+        limit: int = 10,
+        agent_id: Optional[str] = None,
+    ) -> list[dict]:
+        """
+        Search for moral vectors using semantic search.
+
+        Args:
+            query: Search query
+            limit: Maximum results
+            agent_id: Filter by agent (optional)
+
+        Returns: List of matching moral vectors
+        """
+        results = await self.search_knowledge(
+            query=f"moral vector {query}",
+            limit=limit,
+        )
+
+        vectors = []
+        for result in results:
+            content = result.get("content", "")
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.MORAL_VECTOR.value:
+                    if agent_id is None or data.get("agent_id") == agent_id:
+                        vectors.append(data.get("data"))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return vectors
+
+    async def get_moral_trajectory_waypoints(
+        self,
+        entity_id: str,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        Get all waypoints for an entity's moral trajectory.
+
+        Args:
+            entity_id: The entity being tracked
+            limit: Maximum waypoints to return
+
+        Returns: List of moral vector waypoints
+        """
+        # Search for trajectory
+        content = await self.get_content(f"moral/trajectories/{entity_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                trajectory = data.get("data", {})
+                waypoints = trajectory.get("waypoints", [])
+                return waypoints[:limit]
+            except json.JSONDecodeError:
+                pass
+
+        return []
+
+    async def list_moral_geometry(
+        self,
+        geometry_type: Optional[str] = None,
+    ) -> list[str]:
+        """
+        List all moral geometry content.
+
+        Args:
+            geometry_type: Filter by type (vectors, trajectories, spectral)
+
+        Returns: List of content paths
+        """
+        paths = await self.list_content(content_type="moral_geometry")
+
+        if geometry_type:
+            paths = [p for p in paths if f"moral/{geometry_type}" in p]
+
+        return paths
+
+    # =========================================================================
+    # Kala Operations - Contribution Visibility System
+    # =========================================================================
+
+    async def save_kala_event(
+        self,
+        event_id: str,
+        event_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a Kala event to the graph.
+
+        Args:
+            event_id: Unique identifier for the event
+            event_data: Dict containing event data (participants, multipliers, etc.)
+            vessel_id: Which vessel/community this belongs to
+
+        Returns: The event ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.KALA_EVENT.value,
+            "vessel_id": vessel_id,
+            "data": event_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"kala/events/{vessel_id}/{event_id}",
+            content,
+            content_type="kala"
+        )
+
+        return event_id
+
+    async def load_kala_event(self, event_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load a Kala event from the graph."""
+        content = await self.get_content(f"kala/events/{vessel_id}/{event_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.KALA_EVENT.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_kala_events(
+        self,
+        vessel_id: str = "default",
+        limit: int = 100,
+    ) -> list[dict]:
+        """List all Kala events for a vessel."""
+        paths = await self.list_content(content_type="kala")
+
+        events = []
+        prefix = f"kala/events/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.KALA_EVENT.value:
+                            events.append(data.get("data"))
+                    except json.JSONDecodeError:
+                        pass
+
+            if len(events) >= limit:
+                break
+
+        return events
+
+    async def get_participant_history(
+        self,
+        participant_id: str,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Get a participant's own history (HumanView).
+        Returns only their own data - no rankings or comparisons.
+        """
+        events = await self.list_kala_events(vessel_id)
+
+        participant_events = []
+        total_kala = 0.0
+        total_hours = 0.0
+
+        for event in events:
+            participants = event.get("participants", [])
+            for p in participants:
+                if p.get("participant_id") == participant_id:
+                    participant_events.append({
+                        "event_id": event.get("id"),
+                        "event_name": event.get("name"),
+                        "timestamp": p.get("timestamp"),
+                        "hours": p.get("hours", 0),
+                        "kala_received": p.get("kala_received", 0),
+                    })
+                    total_kala += p.get("kala_received", 0)
+                    total_hours += p.get("hours", 0)
+
+        # Aggregate community stats (anonymized)
+        all_participants = set()
+        community_total_kala = 0.0
+        for event in events:
+            community_total_kala += event.get("total_kala", 0)
+            for p in event.get("participants", []):
+                all_participants.add(p.get("participant_id"))
+
+        return {
+            "participant_id": participant_id,
+            "total_kala": total_kala,
+            "event_count": len(participant_events),
+            "total_hours": total_hours,
+            "events": participant_events,
+            # Anonymized community stats
+            "community_total_kala": community_total_kala,
+            "community_event_count": len(events),
+            "community_active_participants": len(all_participants),
+        }
+
+    async def get_agent_view(
+        self,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Get the full agent view (AgentView) for coordination.
+        Contains pattern data that enables burnout/withdrawal detection.
+        NOT exposed to humans.
+        """
+        events = await self.list_kala_events(vessel_id)
+
+        # Build participation frequency
+        from collections import defaultdict
+        participation_frequency = defaultdict(int)
+        participant_hours = defaultdict(float)
+        participant_kala = defaultdict(float)
+        all_participations = defaultdict(list)
+
+        for event in events:
+            for p in event.get("participants", []):
+                pid = p.get("participant_id")
+                participation_frequency[pid] += 1
+                participant_hours[pid] += p.get("hours", 0)
+                participant_kala[pid] += p.get("kala_received", 0)
+                all_participations[pid].append(p)
+
+        # Detect burnout risks (high recent hours)
+        burnout_risks = []
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        week_ago = now - timedelta(days=7)
+
+        for pid, participations in all_participations.items():
+            recent_hours = sum(
+                p.get("hours", 0) for p in participations
+                if datetime.fromisoformat(p.get("timestamp", now.isoformat())) > week_ago
+            )
+            if recent_hours > 20:  # threshold
+                burnout_risks.append({
+                    "participant_id": pid,
+                    "hours_this_week": recent_hours,
+                    "message": "High contribution - may need support"
+                })
+
+        # Detect withdrawal (sudden drops)
+        withdrawal_signals = []
+        two_weeks = now - timedelta(days=14)
+        six_weeks = now - timedelta(days=42)
+
+        for pid, participations in all_participations.items():
+            recent = [p for p in participations
+                      if datetime.fromisoformat(p.get("timestamp", now.isoformat())) > two_weeks]
+            baseline = [p for p in participations
+                        if two_weeks >= datetime.fromisoformat(p.get("timestamp", now.isoformat())) > six_weeks]
+
+            if len(baseline) >= 2 and len(recent) == 0:
+                withdrawal_signals.append({
+                    "participant_id": pid,
+                    "baseline_events": len(baseline),
+                    "recent_events": 0,
+                    "message": "Sudden withdrawal detected"
+                })
+
+        # Build care network (co-participation)
+        co_participation = defaultdict(int)
+        for event in events:
+            pids = [p.get("participant_id") for p in event.get("participants", [])]
+            for i, p1 in enumerate(pids):
+                for p2 in pids[i+1:]:
+                    key = tuple(sorted([p1, p2]))
+                    co_participation[key] += 1
+
+        care_edges = [(k[0], k[1], v) for k, v in co_participation.items()]
+
+        # Find isolated participants
+        connected = set()
+        for k in co_participation.keys():
+            connected.add(k[0])
+            connected.add(k[1])
+        isolated = [pid for pid in participation_frequency.keys() if pid not in connected]
+
+        return {
+            "vessel_id": vessel_id,
+            "participation_frequency": dict(participation_frequency),
+            "participant_hours": dict(participant_hours),
+            "participant_kala": dict(participant_kala),
+            "burnout_risks": burnout_risks,
+            "withdrawal_signals": withdrawal_signals,
+            "care_network": {
+                "edges": care_edges,
+                "isolated": isolated,
+            },
+            "total_events": len(events),
+            "total_participants": len(participation_frequency),
+        }
+
+    async def save_kala_attractor_metrics(
+        self,
+        vessel_id: str,
+        metrics: dict,
+    ) -> None:
+        """Save attractor dynamics metrics for a vessel."""
+        content = json.dumps({
+            "type": VesselNodeType.KALA_ATTRACTOR.value,
+            "vessel_id": vessel_id,
+            "metrics": metrics,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"kala/attractors/{vessel_id}",
+            content,
+            content_type="kala"
+        )
+
+    async def load_kala_attractor_metrics(self, vessel_id: str) -> Optional[dict]:
+        """Load attractor metrics for a vessel."""
+        content = await self.get_content(f"kala/attractors/{vessel_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                return data.get("metrics")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    # =========================================================================
+    # Persona & Voice Operations - Agent Identity System
+    # =========================================================================
+
+    async def save_persona(
+        self,
+        persona_id: str,
+        persona_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save an agent persona to the graph.
+
+        Args:
+            persona_id: Unique identifier for the persona
+            persona_data: Dict containing persona data (voice, traits, etc.)
+            vessel_id: Which vessel this persona belongs to
+
+        Returns: The persona ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.PERSONA.value,
+            "vessel_id": vessel_id,
+            "data": persona_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"personas/{vessel_id}/{persona_id}",
+            content,
+            content_type="persona"
+        )
+
+        return persona_id
+
+    async def load_persona(self, persona_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load a persona from the graph."""
+        content = await self.get_content(f"personas/{vessel_id}/{persona_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.PERSONA.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_personas(
+        self,
+        vessel_id: str = "default",
+        include_proxies: bool = True,
+    ) -> list[dict]:
+        """List all personas for a vessel."""
+        paths = await self.list_content(content_type="persona")
+
+        personas = []
+        prefix = f"personas/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.PERSONA.value:
+                            persona = data.get("data", {})
+                            if include_proxies or not persona.get("is_human_proxy"):
+                                personas.append(persona)
+                    except json.JSONDecodeError:
+                        pass
+
+        return personas
+
+    async def find_human_proxies(
+        self,
+        human_id: str,
+        vessel_id: str = "default",
+    ) -> list[dict]:
+        """Find all proxy personas for a specific human."""
+        all_personas = await self.list_personas(vessel_id, include_proxies=True)
+        return [p for p in all_personas if p.get("human_id") == human_id]
+
+    async def save_voice_session(
+        self,
+        session_id: str,
+        session_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a voice session to the graph.
+
+        Args:
+            session_id: Unique identifier for the session
+            session_data: Dict containing session data
+            vessel_id: Which vessel this session belongs to
+
+        Returns: The session ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.VOICE_SESSION.value,
+            "vessel_id": vessel_id,
+            "data": session_data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"voice_sessions/{vessel_id}/{session_id}",
+            content,
+            content_type="voice_session"
+        )
+
+        return session_id
+
+    async def load_voice_session(self, session_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load a voice session from the graph."""
+        content = await self.get_content(f"voice_sessions/{vessel_id}/{session_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.VOICE_SESSION.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_voice_sessions(
+        self,
+        vessel_id: str = "default",
+        persona_id: str = None,
+        active_only: bool = False,
+    ) -> list[dict]:
+        """List voice sessions, optionally filtered by persona or active status."""
+        paths = await self.list_content(content_type="voice_session")
+
+        sessions = []
+        prefix = f"voice_sessions/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.VOICE_SESSION.value:
+                            session = data.get("data", {})
+                            # Apply filters
+                            if persona_id and session.get("persona_id") != persona_id:
+                                continue
+                            if active_only and not session.get("is_active"):
+                                continue
+                            sessions.append(session)
+                    except json.JSONDecodeError:
+                        pass
+
+        return sessions
+
+    async def save_hume_config(
+        self,
+        config_id: str,
+        config_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """Save a Hume EVI configuration."""
+        content = json.dumps({
+            "type": VesselNodeType.HUME_CONFIG.value,
+            "vessel_id": vessel_id,
+            "data": config_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"hume_configs/{vessel_id}/{config_id}",
+            content,
+            content_type="hume_config"
+        )
+
+        return config_id
+
+    async def load_hume_config(self, config_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load a Hume EVI configuration."""
+        content = await self.get_content(f"hume_configs/{vessel_id}/{config_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.HUME_CONFIG.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def get_persona_emotional_history(
+        self,
+        persona_id: str,
+        vessel_id: str = "default",
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        Get emotional history from voice sessions for a persona.
+        Returns emotional trajectories aggregated across sessions.
+        """
+        sessions = await self.list_voice_sessions(
+            vessel_id=vessel_id,
+            persona_id=persona_id
+        )
+
+        all_emotions = []
+        for session in sessions:
+            trajectory = session.get("emotional_trajectory", [])
+            for emotion in trajectory:
+                emotion["session_id"] = session.get("id")
+                all_emotions.append(emotion)
+
+        # Sort by timestamp and limit
+        all_emotions.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        return all_emotions[:limit]
+
+    async def get_vessel_emotional_state(
+        self,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Get aggregate emotional state across all active sessions in a vessel.
+        Useful for understanding community emotional climate.
+        """
+        sessions = await self.list_voice_sessions(
+            vessel_id=vessel_id,
+            active_only=True
+        )
+
+        if not sessions:
+            return {"active_sessions": 0, "emotions": {}}
+
+        from collections import Counter
+        emotion_counts = Counter()
+        valence_sum = 0
+        arousal_sum = 0
+        count = 0
+
+        for session in sessions:
+            current = session.get("current_emotion", {})
+            if current.get("dominant_emotion"):
+                emotion_counts[current["dominant_emotion"]] += 1
+            valence_sum += current.get("valence", 0)
+            arousal_sum += current.get("arousal", 0)
+            count += 1
+
+        return {
+            "active_sessions": len(sessions),
+            "dominant_emotions": emotion_counts.most_common(5),
+            "average_valence": valence_sum / count if count else 0,
+            "average_arousal": arousal_sum / count if count else 0,
+        }
+
+    # =========================================================================
+    # Entity Ontology Operations - Universal Entity System
+    # =========================================================================
+
+    async def save_entity(
+        self,
+        entity_id: str,
+        entity_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a universal entity persona to the graph.
+
+        This is the primary method for storing any entity type:
+        humans, agents, plants, machines, systems, biomes, etc.
+
+        Args:
+            entity_id: Unique identifier for the entity
+            entity_data: Dict containing full EntityPersona data
+            vessel_id: Which vessel this entity belongs to
+
+        Returns: The entity ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.ENTITY.value,
+            "vessel_id": vessel_id,
+            "entity_type": entity_data.get("entity_type", "agent"),
+            "data": entity_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"entities/{vessel_id}/{entity_id}",
+            content,
+            content_type="entity"
+        )
+
+        return entity_id
+
+    async def load_entity(self, entity_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load an entity persona from the graph."""
+        content = await self.get_content(f"entities/{vessel_id}/{entity_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.ENTITY.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_entities(
+        self,
+        vessel_id: str = "default",
+        entity_type: Optional[str] = None,
+        voice_source: Optional[str] = None,
+        include_proxies: bool = True,
+    ) -> list[dict]:
+        """
+        List all entities for a vessel, optionally filtered.
+
+        Args:
+            vessel_id: Which vessel
+            entity_type: Filter by type (human, agent, plant, machine, etc.)
+            voice_source: Filter by voice source (self, proxy, sensor, collective)
+            include_proxies: Whether to include proxy entities
+
+        Returns: List of entity data dicts
+        """
+        paths = await self.list_content(content_type="entity")
+
+        entities = []
+        prefix = f"entities/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.ENTITY.value:
+                            entity = data.get("data", {})
+
+                            # Apply filters
+                            if entity_type and entity.get("entity_type") != entity_type:
+                                continue
+                            if voice_source and entity.get("voice_source") != voice_source:
+                                continue
+                            if not include_proxies and entity.get("is_proxy"):
+                                continue
+
+                            entities.append(entity)
+                    except json.JSONDecodeError:
+                        pass
+
+        return entities
+
+    async def search_entities_by_type(
+        self,
+        vessel_id: str = "default",
+        entity_types: Optional[list[str]] = None,
+    ) -> dict[str, list[dict]]:
+        """
+        Get entities grouped by type.
+
+        Returns: Dict mapping entity_type -> list of entities
+        """
+        all_entities = await self.list_entities(vessel_id)
+
+        grouped = {}
+        for entity in all_entities:
+            etype = entity.get("entity_type", "unknown")
+            if entity_types and etype not in entity_types:
+                continue
+            if etype not in grouped:
+                grouped[etype] = []
+            grouped[etype].append(entity)
+
+        return grouped
+
+    async def find_entities_needing_spokespersons(
+        self,
+        vessel_id: str = "default",
+    ) -> list[dict]:
+        """Find entities that need spokespersons but don't have any."""
+        entities = await self.list_entities(vessel_id)
+
+        needing = []
+        for entity in entities:
+            voice_source = entity.get("voice_source", "self")
+            if voice_source in ["proxy", "collective"]:
+                spokespersons = entity.get("spokespersons", [])
+                if not spokespersons:
+                    needing.append(entity)
+
+        return needing
+
+    async def find_entities_with_incomplete_elicitation(
+        self,
+        vessel_id: str = "default",
+    ) -> list[dict]:
+        """Find entities that haven't completed persona elicitation."""
+        entities = await self.list_entities(vessel_id)
+        return [e for e in entities if not e.get("elicitation_complete", False)]
+
+    # =========================================================================
+    # Elicitation Session Operations
+    # =========================================================================
+
+    async def save_elicitation_session(
+        self,
+        session_id: str,
+        session_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save an elicitation session to the graph.
+
+        Args:
+            session_id: Unique identifier for the session
+            session_data: Dict containing ElicitationSession data
+            vessel_id: Which vessel
+
+        Returns: The session ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.ELICITATION_SESSION.value,
+            "vessel_id": vessel_id,
+            "entity_id": session_data.get("entity_id"),
+            "data": session_data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"elicitation/{vessel_id}/{session_id}",
+            content,
+            content_type="elicitation_session"
+        )
+
+        return session_id
+
+    async def load_elicitation_session(
+        self,
+        session_id: str,
+        vessel_id: str = "default",
+    ) -> Optional[dict]:
+        """Load an elicitation session from the graph."""
+        content = await self.get_content(f"elicitation/{vessel_id}/{session_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.ELICITATION_SESSION.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_elicitation_sessions(
+        self,
+        vessel_id: str = "default",
+        entity_id: Optional[str] = None,
+        active_only: bool = False,
+    ) -> list[dict]:
+        """
+        List elicitation sessions, optionally filtered.
+
+        Args:
+            vessel_id: Which vessel
+            entity_id: Filter by entity being elicited
+            active_only: Only return active sessions
+
+        Returns: List of session data dicts
+        """
+        paths = await self.list_content(content_type="elicitation_session")
+
+        sessions = []
+        prefix = f"elicitation/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.ELICITATION_SESSION.value:
+                            session = data.get("data", {})
+
+                            # Apply filters
+                            if entity_id and session.get("entity_id") != entity_id:
+                                continue
+                            if active_only and not session.get("is_active"):
+                                continue
+
+                            sessions.append(session)
+                    except json.JSONDecodeError:
+                        pass
+
+        return sessions
+
+    async def get_active_elicitation_for_entity(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+    ) -> Optional[dict]:
+        """Get the active elicitation session for an entity, if any."""
+        sessions = await self.list_elicitation_sessions(
+            vessel_id=vessel_id,
+            entity_id=entity_id,
+            active_only=True
+        )
+        return sessions[0] if sessions else None
+
+    # =========================================================================
+    # Spokesperson Operations
+    # =========================================================================
+
+    async def save_spokesperson(
+        self,
+        spokesperson_id: str,
+        spokesperson_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a spokesperson to the graph.
+
+        Args:
+            spokesperson_id: Unique identifier
+            spokesperson_data: Dict containing Spokesperson data
+            vessel_id: Which vessel
+
+        Returns: The spokesperson ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.SPOKESPERSON.value,
+            "vessel_id": vessel_id,
+            "entity_id": spokesperson_data.get("entity_id"),
+            "data": spokesperson_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"spokespersons/{vessel_id}/{spokesperson_id}",
+            content,
+            content_type="spokesperson"
+        )
+
+        return spokesperson_id
+
+    async def load_spokespersons_for_entity(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+        active_only: bool = True,
+    ) -> list[dict]:
+        """
+        Load all spokespersons for an entity.
+
+        Args:
+            entity_id: Which entity
+            vessel_id: Which vessel
+            active_only: Only return active spokespersons
+
+        Returns: List of spokesperson data dicts
+        """
+        paths = await self.list_content(content_type="spokesperson")
+
+        spokespersons = []
+        prefix = f"spokespersons/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.SPOKESPERSON.value:
+                            spokesperson = data.get("data", {})
+                            if spokesperson.get("entity_id") == entity_id:
+                                if not active_only or spokesperson.get("active", True):
+                                    spokespersons.append(spokesperson)
+                    except json.JSONDecodeError:
+                        pass
+
+        return spokespersons
+
+    # =========================================================================
+    # Sensor Source Operations
+    # =========================================================================
+
+    async def save_sensor_source(
+        self,
+        sensor_id: str,
+        sensor_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a sensor source to the graph.
+
+        Args:
+            sensor_id: Unique identifier
+            sensor_data: Dict containing SensorSource data
+            vessel_id: Which vessel
+
+        Returns: The sensor ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.SENSOR_SOURCE.value,
+            "vessel_id": vessel_id,
+            "entity_id": sensor_data.get("entity_id"),
+            "data": sensor_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"sensors/{vessel_id}/{sensor_id}",
+            content,
+            content_type="sensor_source"
+        )
+
+        return sensor_id
+
+    async def load_sensors_for_entity(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+    ) -> list[dict]:
+        """Load all sensor sources for an entity."""
+        paths = await self.list_content(content_type="sensor_source")
+
+        sensors = []
+        prefix = f"sensors/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.SENSOR_SOURCE.value:
+                            sensor = data.get("data", {})
+                            if sensor.get("entity_id") == entity_id:
+                                sensors.append(sensor)
+                    except json.JSONDecodeError:
+                        pass
+
+        return sensors
+
+    # =========================================================================
+    # Story Operations
+    # =========================================================================
+
+    async def save_story(
+        self,
+        story_id: str,
+        story_data: dict,
+        entity_id: str,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a defining story to the graph.
+
+        Args:
+            story_id: Unique identifier
+            story_data: Dict containing Story data
+            entity_id: Which entity this story belongs to
+            vessel_id: Which vessel
+
+        Returns: The story ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.STORY.value,
+            "vessel_id": vessel_id,
+            "entity_id": entity_id,
+            "data": story_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"stories/{vessel_id}/{entity_id}/{story_id}",
+            content,
+            content_type="story"
+        )
+
+        return story_id
+
+    async def load_stories_for_entity(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+        limit: int = 100,
+    ) -> list[dict]:
+        """Load all stories for an entity."""
+        paths = await self.list_content(content_type="story")
+
+        stories = []
+        prefix = f"stories/{vessel_id}/{entity_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.STORY.value:
+                            stories.append(data.get("data", {}))
+                    except json.JSONDecodeError:
+                        pass
+
+            if len(stories) >= limit:
+                break
+
+        return stories
+
+    # =========================================================================
+    # Vessel-wide Entity Analytics
+    # =========================================================================
+
+    async def get_vessel_entity_summary(
+        self,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Get a summary of all entities in a vessel.
+
+        Returns: Summary with counts by type, voice source, completion status
+        """
+        entities = await self.list_entities(vessel_id)
+
+        from collections import Counter
+
+        type_counts = Counter()
+        voice_counts = Counter()
+        scale_counts = Counter()
+        complete_count = 0
+        incomplete_count = 0
+
+        for entity in entities:
+            type_counts[entity.get("entity_type", "unknown")] += 1
+            voice_counts[entity.get("voice_source", "unknown")] += 1
+            scale_counts[entity.get("temporal_scale", "unknown")] += 1
+
+            if entity.get("elicitation_complete"):
+                complete_count += 1
+            else:
+                incomplete_count += 1
+
+        return {
+            "vessel_id": vessel_id,
+            "total_entities": len(entities),
+            "by_type": dict(type_counts),
+            "by_voice_source": dict(voice_counts),
+            "by_temporal_scale": dict(scale_counts),
+            "elicitation_complete": complete_count,
+            "elicitation_incomplete": incomplete_count,
+        }
+
+    async def get_entity_relationship_graph(
+        self,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Build a graph of entity relationships.
+
+        Returns: Nodes and edges representing entity connections
+        """
+        entities = await self.list_entities(vessel_id)
+
+        nodes = []
+        edges = []
+
+        for entity in entities:
+            entity_id = entity.get("id", "")
+            nodes.append({
+                "id": entity_id,
+                "name": entity.get("name", ""),
+                "type": entity.get("entity_type", "unknown"),
+                "voice_source": entity.get("voice_source", "unknown"),
+            })
+
+            # Dependency edges
+            for dep in entity.get("dependencies", []):
+                # Check if dependency is another entity
+                dep_entity = next(
+                    (e for e in entities if e.get("name", "").lower() == dep.lower()),
+                    None
+                )
+                if dep_entity:
+                    edges.append({
+                        "from": entity_id,
+                        "to": dep_entity.get("id"),
+                        "type": "depends_on",
+                    })
+
+            # Proxy relationships
+            if entity.get("proxy_for"):
+                edges.append({
+                    "from": entity_id,
+                    "to": entity.get("proxy_for"),
+                    "type": "proxy_for",
+                })
+
+            # Spokesperson relationships
+            for sp in entity.get("spokespersons", []):
+                sp_id = sp.get("id", "")
+                if sp_id:
+                    edges.append({
+                        "from": sp_id,
+                        "to": entity_id,
+                        "type": "speaks_for",
+                    })
+
+        return {
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+    async def find_related_entities(
+        self,
+        entity_id: str,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Find all entities related to a given entity.
+
+        Returns: Dict with related entities by relationship type
+        """
+        entities = await self.list_entities(vessel_id)
+        entity = await self.load_entity(entity_id, vessel_id)
+
+        if not entity:
+            return {"entity_id": entity_id, "not_found": True}
+
+        related = {
+            "depends_on": [],
+            "depended_on_by": [],
+            "speaks_for": [],
+            "spoken_for_by": [],
+            "proxies": [],
+            "proxy_of": [],
+            "same_type": [],
+        }
+
+        entity_name = entity.get("name", "").lower()
+        entity_type = entity.get("entity_type")
+
+        for other in entities:
+            if other.get("id") == entity_id:
+                continue
+
+            other_name = other.get("name", "").lower()
+
+            # Check dependencies
+            if entity_name in [d.lower() for d in other.get("dependencies", [])]:
+                related["depended_on_by"].append(other)
+            if other_name in [d.lower() for d in entity.get("dependencies", [])]:
+                related["depends_on"].append(other)
+
+            # Check proxy relationships
+            if other.get("proxy_for") == entity_id:
+                related["proxies"].append(other)
+            if entity.get("proxy_for") == other.get("id"):
+                related["proxy_of"].append(other)
+
+            # Check spokesperson relationships
+            for sp in entity.get("spokespersons", []):
+                if sp.get("name", "").lower() == other_name:
+                    related["spoken_for_by"].append(other)
+            for sp in other.get("spokespersons", []):
+                if sp.get("name", "").lower() == entity_name:
+                    related["speaks_for"].append(other)
+
+            # Same type
+            if other.get("entity_type") == entity_type:
+                related["same_type"].append(other)
+
+        return {
+            "entity_id": entity_id,
+            "entity_name": entity.get("name"),
+            "related": related,
+        }
 
     # =========================================================================
     # Utility Methods
