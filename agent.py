@@ -160,6 +160,7 @@ class AgentContext:
         self.output_data[key] = value
 
     def output(self):
+        stuck_info = self.is_stuck()
         return {
             "id": self.id,
             "name": self.name,
@@ -179,6 +180,9 @@ class AgentContext:
                 else Localization.get().serialize_datetime(datetime.fromtimestamp(0))
             ),
             "type": self.type.value,
+            "stuck": stuck_info["stuck"],
+            "stuck_reason": stuck_info["reason"],
+            "task_alive": self.task.is_alive() if self.task else False,
             **self.output_data,
         }
 
@@ -214,10 +218,62 @@ class AgentContext:
         self.paused = False
 
     def nudge(self):
+        """Resume a stuck session by killing the process and restarting the monologue.
+
+        This method properly resets the streaming_agent to prevent stale agent references,
+        then starts a fresh monologue on the root agent (agent0).
+        """
         self.kill_process()
         self.paused = False
-        self.task = self.run_task(self.get_agent().monologue)
+        # Reset streaming_agent to prevent using a stale/dead agent reference
+        self.streaming_agent = None
+        # Always start fresh from agent0 to avoid stuck subordinate chains
+        self.task = self.run_task(self.agent0.monologue)
         return self.task
+
+    def is_stuck(self, stale_threshold_seconds: float = 60.0) -> dict:
+        """Detect if the session appears to be stuck.
+
+        Args:
+            stale_threshold_seconds: Time without activity to consider stale (default 60s)
+
+        Returns:
+            dict with:
+                - stuck: bool - True if session appears stuck
+                - reason: str - Description of the stuck state
+                - details: dict - Additional diagnostic information
+        """
+        details = {
+            "task_alive": self.task.is_alive() if self.task else False,
+            "paused": self.paused,
+            "streaming_agent": self.streaming_agent.agent_name if self.streaming_agent else None,
+            "last_message_age": (datetime.now(timezone.utc) - self.last_message).total_seconds() if self.last_message else None,
+        }
+
+        # Check various stuck conditions
+        reasons = []
+
+        # Condition 1: Paused with an active task but no activity
+        if self.paused and details["task_alive"]:
+            reasons.append("paused with active task")
+
+        # Condition 2: Task alive but no recent activity (potential infinite loop or hang)
+        if details["task_alive"] and details["last_message_age"] and details["last_message_age"] > stale_threshold_seconds:
+            reasons.append(f"no activity for {details['last_message_age']:.0f}s with active task")
+
+        # Condition 3: streaming_agent set but task is dead (cleanup failure)
+        if self.streaming_agent and not details["task_alive"]:
+            reasons.append("streaming_agent set but task is dead")
+
+        # Condition 4: Task not alive but paused (inconsistent state)
+        if self.paused and not details["task_alive"]:
+            reasons.append("paused but no active task")
+
+        return {
+            "stuck": len(reasons) > 0,
+            "reason": "; ".join(reasons) if reasons else "healthy",
+            "details": details,
+        }
 
     def get_agent(self):
         return self.streaming_agent or self.agent0
@@ -762,8 +818,28 @@ class Agent:
         self.context.log.set_progress(message, True)
         return False
 
-    async def handle_intervention(self, progress: str = ""):
+    async def handle_intervention(self, progress: str = "", timeout: float = 300.0):
+        """Handle intervention messages and paused state.
+
+        Args:
+            progress: Current progress to save if intervention occurs
+            timeout: Maximum seconds to wait while paused (default 5 minutes)
+        """
+        pause_start = None
         while self.context.paused:
+            if pause_start is None:
+                pause_start = asyncio.get_event_loop().time()
+            elif asyncio.get_event_loop().time() - pause_start > timeout:
+                # Timeout reached - auto-unpause to prevent stuck state
+                PrintStyle(font_color="orange", padding=True).print(
+                    f"Pause timeout ({timeout}s) reached, auto-unpausing session"
+                )
+                self.context.log.log(
+                    type="warning",
+                    content=f"Session auto-unpaused after {timeout}s timeout"
+                )
+                self.context.paused = False
+                break
             await asyncio.sleep(0.1)  # wait if paused
         if (
             self.intervention
@@ -783,8 +859,27 @@ class Agent:
             self.hist_add_user_message(msg, intervention=True)
             raise InterventionException(msg)
 
-    async def wait_if_paused(self):
+    async def wait_if_paused(self, timeout: float = 300.0):
+        """Wait while the context is paused, with timeout to prevent stuck state.
+
+        Args:
+            timeout: Maximum seconds to wait (default 5 minutes)
+        """
+        pause_start = None
         while self.context.paused:
+            if pause_start is None:
+                pause_start = asyncio.get_event_loop().time()
+            elif asyncio.get_event_loop().time() - pause_start > timeout:
+                # Timeout reached - auto-unpause
+                PrintStyle(font_color="orange", padding=True).print(
+                    f"Pause timeout ({timeout}s) reached in wait_if_paused"
+                )
+                self.context.log.log(
+                    type="warning",
+                    content=f"Session auto-unpaused after {timeout}s timeout"
+                )
+                self.context.paused = False
+                break
             await asyncio.sleep(0.1)
 
     async def process_tools(self, msg: str):
