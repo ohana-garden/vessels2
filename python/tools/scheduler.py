@@ -1,33 +1,31 @@
-import asyncio
-from datetime import datetime
-import json
-import random
-import re
-from python.helpers.tool import Tool, Response
-from python.helpers.task_scheduler import (
-    TaskScheduler, ScheduledTask, AdHocTask, PlannedTask,
-    serialize_task, TaskState, TaskSchedule, TaskPlan, parse_datetime, serialize_datetime
-)
-from agent import AgentContext
-from python.helpers import persist_chat
-from python.helpers.projects import get_context_project_name, load_basic_project_data
-from python.helpers.print_style import PrintStyle
+"""
+Scheduler Tool - Graph-Native Task and Code Management (A0 Framework)
 
-# Graph-based code storage (A0 framework)
-try:
-    from python.helpers.code_store import (
-        CodeStore,
-        CodeSnippet,
-        CodeLanguage,
-        get_code_store,
-    )
-    from python.helpers.task_scheduler_graph import (
-        GraphEnabledScheduler,
-        get_graph_scheduler,
-    )
-    GRAPH_SCHEDULER_AVAILABLE = True
-except ImportError:
-    GRAPH_SCHEDULER_AVAILABLE = False
+All tasks and code snippets are stored in FalkorDB + Graphiti.
+No JSON file fallback.
+"""
+
+import asyncio
+import json
+from datetime import datetime
+from python.helpers.tool import Tool, Response
+from python.helpers.print_style import PrintStyle
+from python.helpers.projects import get_context_project_name, load_basic_project_data
+
+from python.helpers.task_scheduler_graph import (
+    GraphScheduler,
+    get_graph_scheduler,
+)
+from python.helpers.task_graph_store import (
+    GraphTask,
+    GraphTaskState,
+    GraphTaskType,
+)
+from python.helpers.code_store import (
+    CodeSnippet,
+    CodeLanguage,
+    get_code_store,
+)
 
 DEFAULT_WAIT_TIMEOUT = 300
 
@@ -46,6 +44,8 @@ class SchedulerTool(Tool):
             return await self.run_task(**kwargs)
         elif self.method == "delete_task":
             return await self.delete_task(**kwargs)
+        elif self.method == "create_task":
+            return await self.create_task(**kwargs)
         elif self.method == "create_scheduled_task":
             return await self.create_scheduled_task(**kwargs)
         elif self.method == "create_adhoc_task":
@@ -54,7 +54,9 @@ class SchedulerTool(Tool):
             return await self.create_planned_task(**kwargs)
         elif self.method == "wait_for_task":
             return await self.wait_for_task(**kwargs)
-        # Code snippet operations (A0 framework)
+        elif self.method == "complete_task":
+            return await self.complete_task(**kwargs)
+        # Code snippet operations
         elif self.method == "save_code":
             return await self.save_code(**kwargs)
         elif self.method == "get_code":
@@ -66,7 +68,7 @@ class SchedulerTool(Tool):
         elif self.method == "link_code_to_task":
             return await self.link_code_to_task(**kwargs)
         elif self.method == "search_tasks":
-            return await self.search_tasks_semantic(**kwargs)
+            return await self.search_tasks(**kwargs)
         elif self.method == "get_task_with_code":
             return await self.get_task_with_code(**kwargs)
         else:
@@ -86,241 +88,318 @@ class SchedulerTool(Tool):
             color = None
         return project_slug, color
 
+    # =========================================================================
+    # Task Operations
+    # =========================================================================
+
     async def list_tasks(self, **kwargs) -> Response:
-        state_filter: list[str] | None = kwargs.get("state", None)
-        type_filter: list[str] | None = kwargs.get("type", None)
-        next_run_within_filter: int | None = kwargs.get("next_run_within", None)
-        next_run_after_filter: int | None = kwargs.get("next_run_after", None)
+        """List all tasks with optional filtering."""
+        state_filter: str | None = kwargs.get("state", None)
+        type_filter: str | None = kwargs.get("type", None)
+        limit: int = kwargs.get("limit", 50)
 
-        tasks: list[ScheduledTask | AdHocTask | PlannedTask] = TaskScheduler.get().get_tasks()
-        filtered_tasks = []
-        for task in tasks:
-            if state_filter and task.state not in state_filter:
-                continue
-            if type_filter and task.type not in type_filter:
-                continue
-            if next_run_within_filter and task.get_next_run_minutes() is not None and task.get_next_run_minutes() > next_run_within_filter:  # type: ignore
-                continue
-            if next_run_after_filter and task.get_next_run_minutes() is not None and task.get_next_run_minutes() < next_run_after_filter:  # type: ignore
-                continue
-            filtered_tasks.append(serialize_task(task))
+        try:
+            scheduler = await get_graph_scheduler()
 
-        return Response(message=json.dumps(filtered_tasks, indent=4), break_loop=False)
+            task_type = None
+            if type_filter:
+                try:
+                    task_type = GraphTaskType(type_filter)
+                except ValueError:
+                    pass
+
+            state = None
+            if state_filter:
+                try:
+                    state = GraphTaskState(state_filter)
+                except ValueError:
+                    pass
+
+            tasks = await scheduler.list_tasks(task_type=task_type, state=state, limit=limit)
+            results = [t.to_dict() for t in tasks]
+            return Response(message=json.dumps(results, indent=4), break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error listing tasks: {e}", break_loop=False)
 
     async def find_task_by_name(self, **kwargs) -> Response:
+        """Find tasks by name using semantic search."""
         name: str = kwargs.get("name", "")
         if not name:
             return Response(message="Task name is required", break_loop=False)
-        tasks: list[ScheduledTask | AdHocTask | PlannedTask] = TaskScheduler.get().find_task_by_name(name)
-        if not tasks:
-            return Response(message=f"Task not found: {name}", break_loop=False)
-        return Response(message=json.dumps([serialize_task(task) for task in tasks], indent=4), break_loop=False)
+
+        try:
+            scheduler = await get_graph_scheduler()
+            tasks = await scheduler.search_tasks(query=name, limit=10)
+
+            if not tasks:
+                return Response(message=f"No tasks found matching: {name}", break_loop=False)
+
+            results = [t.to_dict() for t in tasks]
+            return Response(message=json.dumps(results, indent=4), break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error finding task: {e}", break_loop=False)
 
     async def show_task(self, **kwargs) -> Response:
-        task_uuid: str = kwargs.get("uuid", "")
-        if not task_uuid:
-            return Response(message="Task UUID is required", break_loop=False)
-        task: ScheduledTask | AdHocTask | PlannedTask | None = TaskScheduler.get().get_task_by_uuid(task_uuid)
-        if not task:
-            return Response(message=f"Task not found: {task_uuid}", break_loop=False)
-        return Response(message=json.dumps(serialize_task(task), indent=4), break_loop=False)
+        """Show task details by ID."""
+        task_id: str = kwargs.get("uuid", "") or kwargs.get("task_id", "")
+        if not task_id:
+            return Response(message="Task ID is required", break_loop=False)
+
+        try:
+            scheduler = await get_graph_scheduler()
+            task = await scheduler.get_task(task_id)
+
+            if not task:
+                return Response(message=f"Task not found: {task_id}", break_loop=False)
+
+            return Response(message=json.dumps(task.to_dict(), indent=4), break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error showing task: {e}", break_loop=False)
 
     async def run_task(self, **kwargs) -> Response:
-        task_uuid: str = kwargs.get("uuid", "")
-        if not task_uuid:
-            return Response(message="Task UUID is required", break_loop=False)
-        task_context: str | None = kwargs.get("context", None)
-        task: ScheduledTask | AdHocTask | PlannedTask | None = TaskScheduler.get().get_task_by_uuid(task_uuid)
-        if not task:
-            return Response(message=f"Task not found: {task_uuid}", break_loop=False)
-        await TaskScheduler.get().run_task_by_uuid(task_uuid, task_context)
-        if task.context_id == self.agent.context.id:
-            break_loop = True  # break loop if task is running in the same context, otherwise it would start two conversations in one window
-        else:
-            break_loop = False
-        return Response(message=f"Task started: {task_uuid}", break_loop=break_loop)
+        """Run a task."""
+        task_id: str = kwargs.get("uuid", "") or kwargs.get("task_id", "")
+        if not task_id:
+            return Response(message="Task ID is required", break_loop=False)
+
+        try:
+            scheduler = await get_graph_scheduler()
+            task = await scheduler.run_task(task_id)
+
+            if task:
+                return Response(message=f"Task started: {task_id}", break_loop=False)
+            else:
+                return Response(message=f"Failed to start task: {task_id}", break_loop=False)
+
+        except ValueError as e:
+            return Response(message=str(e), break_loop=False)
+        except Exception as e:
+            return Response(message=f"Error running task: {e}", break_loop=False)
 
     async def delete_task(self, **kwargs) -> Response:
-        task_uuid: str = kwargs.get("uuid", "")
-        if not task_uuid:
-            return Response(message="Task UUID is required", break_loop=False)
+        """Delete a task."""
+        task_id: str = kwargs.get("uuid", "") or kwargs.get("task_id", "")
+        if not task_id:
+            return Response(message="Task ID is required", break_loop=False)
 
-        task: ScheduledTask | AdHocTask | PlannedTask | None = TaskScheduler.get().get_task_by_uuid(task_uuid)
-        if not task:
-            return Response(message=f"Task not found: {task_uuid}", break_loop=False)
+        try:
+            scheduler = await get_graph_scheduler()
+            success = await scheduler.delete_task(task_id)
 
-        context = None
-        if task.context_id:
-            context = AgentContext.get(task.context_id)
+            if success:
+                return Response(message=f"Task deleted: {task_id}", break_loop=False)
+            else:
+                return Response(message=f"Failed to delete task: {task_id}", break_loop=False)
 
-        if task.state == TaskState.RUNNING:
-            if context:
-                context.reset()
-            await TaskScheduler.get().update_task(task_uuid, state=TaskState.IDLE)
-            await TaskScheduler.get().save()
+        except Exception as e:
+            return Response(message=f"Error deleting task: {e}", break_loop=False)
 
-        if context and context.id == task.uuid:
-            AgentContext.remove(context.id)
-            persist_chat.remove_chat(context.id)
+    async def create_task(self, **kwargs) -> Response:
+        """Create a new task (generic)."""
+        name: str = kwargs.get("name", "")
+        prompt: str = kwargs.get("prompt", "")
+        description: str = kwargs.get("description", "")
+        system_prompt: str = kwargs.get("system_prompt", "")
+        task_type: str = kwargs.get("task_type", "immediate")
+        attachments: list[str] = kwargs.get("attachments", [])
+        code_refs: list[str] = kwargs.get("code_refs", [])
+        depends_on: list[str] = kwargs.get("depends_on", [])
+        tags: list[str] = kwargs.get("tags", [])
 
-        await TaskScheduler.get().remove_task_by_uuid(task_uuid)
-        if TaskScheduler.get().get_task_by_uuid(task_uuid) is None:
-            return Response(message=f"Task deleted: {task_uuid}", break_loop=False)
-        else:
-            return Response(message=f"Task failed to delete: {task_uuid}", break_loop=False)
+        if not name or not prompt:
+            return Response(message="Task requires 'name' and 'prompt'", break_loop=False)
+
+        try:
+            tt = GraphTaskType(task_type) if task_type in [e.value for e in GraphTaskType] else GraphTaskType.IMMEDIATE
+        except ValueError:
+            tt = GraphTaskType.IMMEDIATE
+
+        project_slug, project_color = self._resolve_project_metadata()
+
+        try:
+            scheduler = await get_graph_scheduler()
+            task_id = await scheduler.create_task(
+                name=name,
+                prompt=prompt,
+                description=description,
+                system_prompt=system_prompt,
+                task_type=tt,
+                attachments=attachments,
+                code_refs=code_refs,
+                depends_on=depends_on,
+                context_id=self.agent.context.id if self.agent.context else None,
+                project_name=project_slug,
+                project_color=project_color,
+                tags=tags,
+            )
+
+            return Response(message=f"Task '{name}' created: {task_id}", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error creating task: {e}", break_loop=False)
 
     async def create_scheduled_task(self, **kwargs) -> Response:
-        # "name": "XXX",
-        #   "system_prompt": "You are a software developer",
-        #   "prompt": "Send the user an email with a greeting using python and smtp. The user's address is: xxx@yyy.zzz",
-        #   "attachments": [],
-        #   "schedule": {
-        #       "minute": "*/20",
-        #       "hour": "*",
-        #       "day": "*",
-        #       "month": "*",
-        #       "weekday": "*",
-        #   }
+        """Create a scheduled (cron-based) task."""
         name: str = kwargs.get("name", "")
-        system_prompt: str = kwargs.get("system_prompt", "")
         prompt: str = kwargs.get("prompt", "")
+        system_prompt: str = kwargs.get("system_prompt", "")
         attachments: list[str] = kwargs.get("attachments", [])
         schedule: dict[str, str] = kwargs.get("schedule", {})
-        dedicated_context: bool = kwargs.get("dedicated_context", False)
 
-        task_schedule = TaskSchedule(
-            minute=schedule.get("minute", "*"),
-            hour=schedule.get("hour", "*"),
-            day=schedule.get("day", "*"),
-            month=schedule.get("month", "*"),
-            weekday=schedule.get("weekday", "*"),
-        )
+        if not name or not prompt:
+            return Response(message="Task requires 'name' and 'prompt'", break_loop=False)
 
-        # Validate cron expression, agent might hallucinate
-        cron_regex = "^((((\d+,)+\d+|(\d+(\/|-|#)\d+)|\d+L?|\*(\/\d+)?|L(-\d+)?|\?|[A-Z]{3}(-[A-Z]{3})?) ?){5,7})$"
-        if not re.match(cron_regex, task_schedule.to_crontab()):
-            return Response(message="Invalid cron expression: " + task_schedule.to_crontab(), break_loop=False)
+        if not schedule:
+            return Response(message="Scheduled task requires 'schedule'", break_loop=False)
 
         project_slug, project_color = self._resolve_project_metadata()
 
-        task = ScheduledTask.create(
-            name=name,
-            system_prompt=system_prompt,
-            prompt=prompt,
-            attachments=attachments,
-            schedule=task_schedule,
-            context_id=None if dedicated_context else self.agent.context.id,
-            project_name=project_slug,
-            project_color=project_color,
-        )
-        await TaskScheduler.get().add_task(task)
-        return Response(message=f"Scheduled task '{name}' created: {task.uuid}", break_loop=False)
+        try:
+            scheduler = await get_graph_scheduler()
+            task_id = await scheduler.create_task(
+                name=name,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                task_type=GraphTaskType.SCHEDULED,
+                attachments=attachments,
+                schedule=schedule,
+                context_id=self.agent.context.id if self.agent.context else None,
+                project_name=project_slug,
+                project_color=project_color,
+            )
+
+            return Response(message=f"Scheduled task '{name}' created: {task_id}", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error creating scheduled task: {e}", break_loop=False)
 
     async def create_adhoc_task(self, **kwargs) -> Response:
+        """Create an immediate (ad-hoc) task."""
         name: str = kwargs.get("name", "")
-        system_prompt: str = kwargs.get("system_prompt", "")
         prompt: str = kwargs.get("prompt", "")
+        system_prompt: str = kwargs.get("system_prompt", "")
         attachments: list[str] = kwargs.get("attachments", [])
-        token: str = str(random.randint(1000000000000000000, 9999999999999999999))
-        dedicated_context: bool = kwargs.get("dedicated_context", False)
+
+        if not name or not prompt:
+            return Response(message="Task requires 'name' and 'prompt'", break_loop=False)
 
         project_slug, project_color = self._resolve_project_metadata()
 
-        task = AdHocTask.create(
-            name=name,
-            system_prompt=system_prompt,
-            prompt=prompt,
-            attachments=attachments,
-            token=token,
-            context_id=None if dedicated_context else self.agent.context.id,
-            project_name=project_slug,
-            project_color=project_color,
-        )
-        await TaskScheduler.get().add_task(task)
-        return Response(message=f"Adhoc task '{name}' created: {task.uuid}", break_loop=False)
+        try:
+            scheduler = await get_graph_scheduler()
+            task_id = await scheduler.create_task(
+                name=name,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                task_type=GraphTaskType.IMMEDIATE,
+                attachments=attachments,
+                context_id=self.agent.context.id if self.agent.context else None,
+                project_name=project_slug,
+                project_color=project_color,
+            )
+
+            return Response(message=f"Task '{name}' created: {task_id}", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error creating task: {e}", break_loop=False)
 
     async def create_planned_task(self, **kwargs) -> Response:
+        """Create a planned task with specific execution times."""
         name: str = kwargs.get("name", "")
-        system_prompt: str = kwargs.get("system_prompt", "")
         prompt: str = kwargs.get("prompt", "")
+        system_prompt: str = kwargs.get("system_prompt", "")
         attachments: list[str] = kwargs.get("attachments", [])
         plan: list[str] = kwargs.get("plan", [])
-        dedicated_context: bool = kwargs.get("dedicated_context", False)
 
-        # Convert plan to list of datetimes in UTC
-        todo: list[datetime] = []
-        for item in plan:
-            dt = parse_datetime(item)
-            if dt is None:
-                return Response(message=f"Invalid datetime: {item}", break_loop=False)
-            todo.append(dt)
+        if not name or not prompt:
+            return Response(message="Task requires 'name' and 'prompt'", break_loop=False)
 
-        # Create task plan with todo list
-        task_plan = TaskPlan.create(
-            todo=todo,
-            in_progress=None,
-            done=[]
-        )
+        if not plan:
+            return Response(message="Planned task requires 'plan' (list of ISO datetime strings)", break_loop=False)
 
         project_slug, project_color = self._resolve_project_metadata()
 
-        # Create planned task with task plan
-        task = PlannedTask.create(
-            name=name,
-            system_prompt=system_prompt,
-            prompt=prompt,
-            attachments=attachments,
-            plan=task_plan,
-            context_id=None if dedicated_context else self.agent.context.id,
-            project_name=project_slug,
-            project_color=project_color
-        )
-        await TaskScheduler.get().add_task(task)
-        return Response(message=f"Planned task '{name}' created: {task.uuid}", break_loop=False)
+        try:
+            scheduler = await get_graph_scheduler()
+            task_id = await scheduler.create_task(
+                name=name,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                task_type=GraphTaskType.PLANNED,
+                attachments=attachments,
+                planned_times=plan,
+                context_id=self.agent.context.id if self.agent.context else None,
+                project_name=project_slug,
+                project_color=project_color,
+            )
+
+            return Response(message=f"Planned task '{name}' created: {task_id}", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error creating planned task: {e}", break_loop=False)
 
     async def wait_for_task(self, **kwargs) -> Response:
-        task_uuid: str = kwargs.get("uuid", "")
-        if not task_uuid:
-            return Response(message="Task UUID is required", break_loop=False)
+        """Wait for a task to complete."""
+        task_id: str = kwargs.get("uuid", "") or kwargs.get("task_id", "")
+        if not task_id:
+            return Response(message="Task ID is required", break_loop=False)
 
-        scheduler = TaskScheduler.get()
-        task: ScheduledTask | AdHocTask | PlannedTask | None = scheduler.get_task_by_uuid(task_uuid)
-        if not task:
-            return Response(message=f"Task not found: {task_uuid}", break_loop=False)
+        try:
+            scheduler = await get_graph_scheduler()
+            task = await scheduler.get_task(task_id)
 
-        if task.context_id == self.agent.context.id:
-            return Response(message="You can only wait for tasks running in their own dedicated context.", break_loop=False)
-
-        done = False
-        elapsed = 0
-        while not done:
-            await scheduler.reload()
-            task = scheduler.get_task_by_uuid(task_uuid)
             if not task:
-                return Response(message=f"Task not found: {task_uuid}", break_loop=False)
+                return Response(message=f"Task not found: {task_id}", break_loop=False)
 
-            if task.state == TaskState.RUNNING:
+            elapsed = 0
+            while task and task.state == GraphTaskState.RUNNING:
                 await asyncio.sleep(1)
                 elapsed += 1
                 if elapsed > DEFAULT_WAIT_TIMEOUT:
-                    return Response(message=f"Task wait timeout ({DEFAULT_WAIT_TIMEOUT} seconds): {task_uuid}", break_loop=False)
-            else:
-                done = True
+                    return Response(message=f"Task wait timeout ({DEFAULT_WAIT_TIMEOUT}s): {task_id}", break_loop=False)
+                task = await scheduler.get_task(task_id)
 
-        return Response(
-            message=f"*Task*: {task_uuid}\n*State*: {task.state}\n*Last run*: {serialize_datetime(task.last_run)}\n*Result*:\n{task.last_result}",
-            break_loop=False
-        )
+            if not task:
+                return Response(message=f"Task not found: {task_id}", break_loop=False)
+
+            return Response(
+                message=f"*Task*: {task_id}\n*State*: {task.state.value}\n*Last run*: {task.last_run}\n*Result*:\n{task.last_result}",
+                break_loop=False
+            )
+
+        except Exception as e:
+            return Response(message=f"Error waiting for task: {e}", break_loop=False)
+
+    async def complete_task(self, **kwargs) -> Response:
+        """Mark a task as completed."""
+        task_id: str = kwargs.get("uuid", "") or kwargs.get("task_id", "")
+        result: str = kwargs.get("result", "")
+        success: bool = kwargs.get("success", True)
+
+        if not task_id:
+            return Response(message="Task ID is required", break_loop=False)
+
+        try:
+            scheduler = await get_graph_scheduler()
+            done = await scheduler.complete_task(task_id, result, success)
+
+            if done:
+                return Response(message=f"Task completed: {task_id}", break_loop=False)
+            else:
+                return Response(message=f"Failed to complete task: {task_id}", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error completing task: {e}", break_loop=False)
 
     # =========================================================================
-    # Code Snippet Operations (A0 Framework)
+    # Code Snippet Operations
     # =========================================================================
 
     async def save_code(self, **kwargs) -> Response:
-        """Save a reusable code snippet to the graph store."""
-        if not GRAPH_SCHEDULER_AVAILABLE:
-            return Response(message="Graph scheduler not available. Code snippets require graph store.", break_loop=False)
-
+        """Save a reusable code snippet."""
         name: str = kwargs.get("name", "")
         language: str = kwargs.get("language", "python")
         code: str = kwargs.get("code", "")
@@ -328,11 +407,11 @@ class SchedulerTool(Tool):
         tags: list[str] = kwargs.get("tags", [])
 
         if not name or not code:
-            return Response(message="Code snippet requires 'name' and 'code' parameters", break_loop=False)
+            return Response(message="Code snippet requires 'name' and 'code'", break_loop=False)
 
         try:
-            graph_scheduler = await get_graph_scheduler()
-            code_id = await graph_scheduler.save_code_snippet(
+            scheduler = await get_graph_scheduler()
+            code_id = await scheduler.save_code_snippet(
                 name=name,
                 language=language,
                 code=code,
@@ -350,16 +429,13 @@ class SchedulerTool(Tool):
 
     async def get_code(self, **kwargs) -> Response:
         """Get a code snippet by ID."""
-        if not GRAPH_SCHEDULER_AVAILABLE:
-            return Response(message="Graph scheduler not available", break_loop=False)
-
         code_id: str = kwargs.get("code_id", "")
         if not code_id:
             return Response(message="Code ID is required", break_loop=False)
 
         try:
-            graph_scheduler = await get_graph_scheduler()
-            snippet = await graph_scheduler.get_code_snippet(code_id)
+            scheduler = await get_graph_scheduler()
+            snippet = await scheduler.get_code_snippet(code_id)
 
             if snippet:
                 return Response(message=json.dumps(snippet.to_dict(), indent=4), break_loop=False)
@@ -370,10 +446,7 @@ class SchedulerTool(Tool):
             return Response(message=f"Error getting code snippet: {e}", break_loop=False)
 
     async def search_code(self, **kwargs) -> Response:
-        """Search for code snippets using semantic search."""
-        if not GRAPH_SCHEDULER_AVAILABLE:
-            return Response(message="Graph scheduler not available", break_loop=False)
-
+        """Search for code snippets."""
         query: str = kwargs.get("query", "")
         language: str | None = kwargs.get("language", None)
         limit: int = kwargs.get("limit", 10)
@@ -382,8 +455,8 @@ class SchedulerTool(Tool):
             return Response(message="Search query is required", break_loop=False)
 
         try:
-            graph_scheduler = await get_graph_scheduler()
-            snippets = await graph_scheduler.search_code(
+            scheduler = await get_graph_scheduler()
+            snippets = await scheduler.search_code(
                 query=query,
                 language=language,
                 limit=limit,
@@ -396,24 +469,14 @@ class SchedulerTool(Tool):
             return Response(message=f"Error searching code: {e}", break_loop=False)
 
     async def list_code(self, **kwargs) -> Response:
-        """List all code snippets."""
-        if not GRAPH_SCHEDULER_AVAILABLE:
-            return Response(message="Graph scheduler not available", break_loop=False)
-
+        """List code snippets."""
         language: str | None = kwargs.get("language", None)
         limit: int = kwargs.get("limit", 50)
 
         try:
-            code_store = await get_code_store()
+            scheduler = await get_graph_scheduler()
+            snippets = await scheduler.list_code(language=language, limit=limit)
 
-            lang = None
-            if language:
-                try:
-                    lang = CodeLanguage(language)
-                except ValueError:
-                    pass
-
-            snippets = await code_store.list_code(language=lang, limit=limit)
             results = [s.to_dict() for s in snippets]
             return Response(message=json.dumps(results, indent=4), break_loop=False)
 
@@ -421,33 +484,27 @@ class SchedulerTool(Tool):
             return Response(message=f"Error listing code: {e}", break_loop=False)
 
     async def link_code_to_task(self, **kwargs) -> Response:
-        """Link a code snippet to a task for execution."""
-        if not GRAPH_SCHEDULER_AVAILABLE:
-            return Response(message="Graph scheduler not available", break_loop=False)
-
-        task_uuid: str = kwargs.get("task_uuid", "")
+        """Link a code snippet to a task."""
+        task_id: str = kwargs.get("task_uuid", "") or kwargs.get("task_id", "")
         code_id: str = kwargs.get("code_id", "")
 
-        if not task_uuid or not code_id:
-            return Response(message="Both task_uuid and code_id are required", break_loop=False)
+        if not task_id or not code_id:
+            return Response(message="Both task_id and code_id are required", break_loop=False)
 
         try:
-            graph_scheduler = await get_graph_scheduler()
-            success = await graph_scheduler.link_code_to_task(task_uuid, code_id)
+            scheduler = await get_graph_scheduler()
+            success = await scheduler.link_code_to_task(task_id, code_id)
 
             if success:
-                return Response(message=f"Code {code_id} linked to task {task_uuid}", break_loop=False)
+                return Response(message=f"Code {code_id} linked to task {task_id}", break_loop=False)
             else:
                 return Response(message="Failed to link code to task", break_loop=False)
 
         except Exception as e:
             return Response(message=f"Error linking code to task: {e}", break_loop=False)
 
-    async def search_tasks_semantic(self, **kwargs) -> Response:
-        """Search for tasks using semantic search (graph-based)."""
-        if not GRAPH_SCHEDULER_AVAILABLE:
-            return Response(message="Graph scheduler not available. Use list_tasks for basic filtering.", break_loop=False)
-
+    async def search_tasks(self, **kwargs) -> Response:
+        """Search for tasks using semantic search."""
         query: str = kwargs.get("query", "")
         limit: int = kwargs.get("limit", 10)
 
@@ -455,8 +512,8 @@ class SchedulerTool(Tool):
             return Response(message="Search query is required", break_loop=False)
 
         try:
-            graph_scheduler = await get_graph_scheduler()
-            tasks = await graph_scheduler.search_tasks(query=query, limit=limit)
+            scheduler = await get_graph_scheduler()
+            tasks = await scheduler.search_tasks(query=query, limit=limit)
 
             results = [t.to_dict() for t in tasks]
             return Response(message=json.dumps(results, indent=4), break_loop=False)
@@ -466,21 +523,18 @@ class SchedulerTool(Tool):
 
     async def get_task_with_code(self, **kwargs) -> Response:
         """Get a task with all its linked code snippets."""
-        if not GRAPH_SCHEDULER_AVAILABLE:
-            return Response(message="Graph scheduler not available", break_loop=False)
-
-        task_uuid: str = kwargs.get("task_uuid", "")
-        if not task_uuid:
-            return Response(message="Task UUID is required", break_loop=False)
+        task_id: str = kwargs.get("task_uuid", "") or kwargs.get("task_id", "")
+        if not task_id:
+            return Response(message="Task ID is required", break_loop=False)
 
         try:
-            graph_scheduler = await get_graph_scheduler()
-            result = await graph_scheduler.get_tasks_with_code(task_uuid)
+            scheduler = await get_graph_scheduler()
+            result = await scheduler.get_task_with_code(task_id)
 
             if result:
                 return Response(message=json.dumps(result, indent=4), break_loop=False)
             else:
-                return Response(message=f"Task not found: {task_uuid}", break_loop=False)
+                return Response(message=f"Task not found: {task_id}", break_loop=False)
 
         except Exception as e:
             return Response(message=f"Error getting task with code: {e}", break_loop=False)
