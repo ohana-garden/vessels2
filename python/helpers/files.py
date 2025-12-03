@@ -296,37 +296,35 @@ def read_prompt_file(
 
 
 def read_file(relative_path: str, encoding="utf-8"):
-    """Read file from DB. No filesystem fallback for content files."""
-    # Content files (.md, .txt, .json) come from DB
-    if any(relative_path.endswith(ext) for ext in [".md", ".txt", ".json", ".py"]):
-        cache = get_content_cache()
-        cached = cache.get(relative_path)
-        if cached is not None:
-            return cached
-        raise FileNotFoundError(f"Content not found in DB: {relative_path}")
-
-    # Binary/other files still use filesystem (images, etc.)
-    absolute_path = get_abs_path(relative_path)
-    with open(absolute_path, "r", encoding=encoding) as f:
-        return f.read()
+    """Read file from DB."""
+    cache = get_content_cache()
+    cached = cache.get(relative_path)
+    if cached is not None:
+        return cached
+    raise FileNotFoundError(f"Not in DB: {relative_path}")
 
 
 def read_file_bin(relative_path: str):
-    # Try to get the absolute path for the file from the original directory or backup directories
-    absolute_path = get_abs_path(relative_path)
-
-    # read binary content
-    with open(absolute_path, "rb") as f:
-        return f.read()
+    """Read binary file from DB (stored as base64)."""
+    cache = get_content_cache()
+    cached = cache.get(relative_path)
+    if cached is not None:
+        # Binary content stored as base64 in DB
+        if cached.startswith("base64:"):
+            return base64.b64decode(cached[7:])
+        return cached.encode()
+    raise FileNotFoundError(f"Not in DB: {relative_path}")
 
 
 def read_file_base64(relative_path):
-    # get absolute path
-    absolute_path = get_abs_path(relative_path)
-
-    # read binary content and encode to base64
-    with open(absolute_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+    """Read file from DB as base64."""
+    cache = get_content_cache()
+    cached = cache.get(relative_path)
+    if cached is not None:
+        if cached.startswith("base64:"):
+            return cached[7:]
+        return base64.b64encode(cached.encode()).decode("utf-8")
+    raise FileNotFoundError(f"Not in DB: {relative_path}")
 
 
 # =============================================================================
