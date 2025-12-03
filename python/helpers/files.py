@@ -88,9 +88,13 @@ class ContentCache:
             return 0
 
     def get(self, path: str) -> Optional[str]:
-        """Get content by path. Returns None if not found."""
+        """Get content by path. Lazy-loads from DB on first access."""
         if not self._enabled:
             return None
+
+        # Lazy load from DB if not loaded yet
+        if not self._loaded:
+            self.load_from_db_sync()
 
         # Normalize path
         path = path.replace("\\", "/").lstrip("/")
@@ -99,7 +103,25 @@ class ContentCache:
         if path in self._cache:
             return self._cache[path]
 
+        # Try loading single item from DB if not in cache
+        content = self._load_single_from_db(path)
+        if content is not None:
+            self._cache[path] = content
+            return content
+
         return None
+
+    def _load_single_from_db(self, path: str) -> Optional[str]:
+        """Load a single content item from DB."""
+        try:
+            from python.helpers.graph_store import get_graph_store
+            loop = asyncio.new_event_loop()
+            store = loop.run_until_complete(get_graph_store())
+            content = loop.run_until_complete(store.get_content(path))
+            loop.close()
+            return content
+        except Exception:
+            return None
 
     def set(self, path: str, content: str) -> None:
         """Set content in cache."""
