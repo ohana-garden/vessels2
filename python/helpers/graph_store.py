@@ -88,6 +88,11 @@ class VesselNodeType(str, Enum):
     SETTING = "setting"
     PROJECT = "project"
     TASK = "task"
+    # Moral Geometry types
+    MORAL_VECTOR = "moral_vector"
+    MORAL_TRAJECTORY = "moral_trajectory"
+    SPECTRAL_DECOMPOSITION = "spectral_decomposition"
+    MORAL_DISTANCE = "moral_distance"
 
 
 class MemoryArea(str, Enum):
@@ -96,6 +101,14 @@ class MemoryArea(str, Enum):
     FRAGMENTS = "fragments"
     SOLUTIONS = "solutions"
     INSTRUMENTS = "instruments"
+
+
+class MoralGeometryArea(str, Enum):
+    """Storage areas for moral geometry data."""
+    VECTORS = "vectors"
+    TRAJECTORIES = "trajectories"
+    DECOMPOSITIONS = "decompositions"
+    DISTANCES = "distances"
 
 
 # =============================================================================
@@ -799,6 +812,226 @@ class GraphStore:
                     pass
 
         return content_map
+
+    # =========================================================================
+    # Moral Geometry Operations
+    # =========================================================================
+
+    async def save_moral_vector(
+        self,
+        vector_id: str,
+        vector_data: dict,
+        agent_id: str = "default",
+    ) -> str:
+        """
+        Save a moral vector to the graph.
+
+        Args:
+            vector_id: Unique identifier for the vector
+            vector_data: Dict containing moral vector data
+            agent_id: Agent that created/owns this vector
+
+        Returns: The vector ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.MORAL_VECTOR.value,
+            "agent_id": agent_id,
+            "data": vector_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"moral/vectors/{vector_id}",
+            content,
+            content_type="moral_geometry"
+        )
+
+        return vector_id
+
+    async def load_moral_vector(self, vector_id: str) -> Optional[dict]:
+        """Load a moral vector from the graph."""
+        content = await self.get_content(f"moral/vectors/{vector_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.MORAL_VECTOR.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def save_moral_trajectory(
+        self,
+        trajectory_id: str,
+        trajectory_data: dict,
+        entity_id: str = "default",
+    ) -> str:
+        """
+        Save a moral trajectory to the graph.
+
+        Args:
+            trajectory_id: Unique identifier for the trajectory
+            trajectory_data: Dict containing trajectory data with waypoints
+            entity_id: Entity (agent, action sequence) being tracked
+
+        Returns: The trajectory ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.MORAL_TRAJECTORY.value,
+            "entity_id": entity_id,
+            "data": trajectory_data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"moral/trajectories/{trajectory_id}",
+            content,
+            content_type="moral_geometry"
+        )
+
+        return trajectory_id
+
+    async def load_moral_trajectory(self, trajectory_id: str) -> Optional[dict]:
+        """Load a moral trajectory from the graph."""
+        content = await self.get_content(f"moral/trajectories/{trajectory_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.MORAL_TRAJECTORY.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def save_spectral_decomposition(
+        self,
+        decomposition_id: str,
+        decomposition_data: dict,
+        source_vectors: list[str] = None,
+    ) -> str:
+        """
+        Save a spectral decomposition to the graph.
+
+        Args:
+            decomposition_id: Unique identifier
+            decomposition_data: Dict containing eigenvalues, eigenvectors, harmonics
+            source_vectors: IDs of vectors used in decomposition
+
+        Returns: The decomposition ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.SPECTRAL_DECOMPOSITION.value,
+            "source_vectors": source_vectors or [],
+            "data": decomposition_data,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"moral/spectral/{decomposition_id}",
+            content,
+            content_type="moral_geometry"
+        )
+
+        return decomposition_id
+
+    async def load_spectral_decomposition(self, decomposition_id: str) -> Optional[dict]:
+        """Load a spectral decomposition from the graph."""
+        content = await self.get_content(f"moral/spectral/{decomposition_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.SPECTRAL_DECOMPOSITION.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def search_moral_vectors(
+        self,
+        query: str,
+        limit: int = 10,
+        agent_id: Optional[str] = None,
+    ) -> list[dict]:
+        """
+        Search for moral vectors using semantic search.
+
+        Args:
+            query: Search query
+            limit: Maximum results
+            agent_id: Filter by agent (optional)
+
+        Returns: List of matching moral vectors
+        """
+        results = await self.search_knowledge(
+            query=f"moral vector {query}",
+            limit=limit,
+        )
+
+        vectors = []
+        for result in results:
+            content = result.get("content", "")
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.MORAL_VECTOR.value:
+                    if agent_id is None or data.get("agent_id") == agent_id:
+                        vectors.append(data.get("data"))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return vectors
+
+    async def get_moral_trajectory_waypoints(
+        self,
+        entity_id: str,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        Get all waypoints for an entity's moral trajectory.
+
+        Args:
+            entity_id: The entity being tracked
+            limit: Maximum waypoints to return
+
+        Returns: List of moral vector waypoints
+        """
+        # Search for trajectory
+        content = await self.get_content(f"moral/trajectories/{entity_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                trajectory = data.get("data", {})
+                waypoints = trajectory.get("waypoints", [])
+                return waypoints[:limit]
+            except json.JSONDecodeError:
+                pass
+
+        return []
+
+    async def list_moral_geometry(
+        self,
+        geometry_type: Optional[str] = None,
+    ) -> list[str]:
+        """
+        List all moral geometry content.
+
+        Args:
+            geometry_type: Filter by type (vectors, trajectories, spectral)
+
+        Returns: List of content paths
+        """
+        paths = await self.list_content(content_type="moral_geometry")
+
+        if geometry_type:
+            paths = [p for p in paths if f"moral/{geometry_type}" in p]
+
+        return paths
 
     # =========================================================================
     # Utility Methods
