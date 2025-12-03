@@ -88,6 +88,8 @@ class VesselNodeType(str, Enum):
     SETTING = "setting"
     PROJECT = "project"
     TASK = "task"
+    CODE = "code"           # Reusable code snippets for agentic execution
+    EXECUTION = "execution" # Execution history and results
 
 
 class MemoryArea(str, Enum):

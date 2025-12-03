@@ -12,6 +12,20 @@ from python.helpers.strings import truncate_text as truncate_text_string
 from python.helpers.messages import truncate_text as truncate_text_agent
 import re
 
+# Graph execution tracking (A0 framework integration)
+try:
+    from python.helpers.code_store import (
+        CodeStore,
+        CodeSnippet,
+        CodeLanguage,
+        ExecutionRecord,
+        ExecutionStatus,
+        get_code_store,
+    )
+    GRAPH_EXECUTION_AVAILABLE = True
+except ImportError:
+    GRAPH_EXECUTION_AVAILABLE = False
+
 # Timeouts for python, nodejs, and terminal runtimes.
 CODE_EXEC_TIMEOUTS: dict[str, int] = {
     "first_output_timeout": 30,
@@ -112,6 +126,82 @@ class CodeExecution(Tool):
 
     async def after_execution(self, response, **kwargs):
         self.agent.hist_add_tool_result(self.name, response.message, **(response.additional or {}))
+
+        # Store execution record to graph (A0 framework)
+        await self._store_execution_to_graph(response)
+
+    async def _store_execution_to_graph(self, response):
+        """Store execution results to the graph for learning and reuse."""
+        if not GRAPH_EXECUTION_AVAILABLE:
+            return
+
+        try:
+            code_store = await get_code_store()
+
+            runtime = self.args.get("runtime", "").lower().strip()
+            code = self.args.get("code", "")
+
+            # Map runtime to CodeLanguage
+            lang_map = {
+                "python": CodeLanguage.PYTHON,
+                "nodejs": CodeLanguage.NODEJS,
+                "terminal": CodeLanguage.TERMINAL,
+            }
+            language = lang_map.get(runtime, CodeLanguage.TERMINAL)
+
+            # Determine success based on response content
+            output = response.message if response else ""
+            success = "error" not in output.lower() and "exception" not in output.lower()
+
+            # Create execution record
+            record = ExecutionRecord(
+                id="",  # Will be generated
+                code_id=f"inline_{runtime}_{hash(code) % 10000}",  # Inline code reference
+                task_id=None,  # Could be linked if running from scheduler
+                context_id=self.agent.context.id if self.agent.context else None,
+                status=ExecutionStatus.SUCCESS if success else ExecutionStatus.FAILURE,
+                input_data={"runtime": runtime, "code": code[:500]},  # Truncate for storage
+                output=output[:2000],  # Truncate large outputs
+            )
+            record.complete(output=output[:2000], status=ExecutionStatus.SUCCESS if success else ExecutionStatus.FAILURE)
+
+            # Save execution record
+            await code_store.save_execution(record)
+
+            # If successful and code is substantial, consider saving as reusable snippet
+            if success and len(code) > 50 and self.agent.config.get("save_successful_code", False):
+                await self._maybe_save_as_snippet(code_store, code, language, output)
+
+        except Exception as e:
+            # Don't fail the execution if graph storage fails
+            PrintStyle.error(f"Failed to store execution to graph: {e}")
+
+    async def _maybe_save_as_snippet(self, code_store, code: str, language, output: str):
+        """Optionally save successful code as a reusable snippet."""
+        try:
+            # Generate a description from the code (first comment or first line)
+            lines = code.strip().split("\n")
+            description = ""
+            for line in lines[:5]:
+                if line.strip().startswith("#") or line.strip().startswith("//"):
+                    description = line.strip().lstrip("#/").strip()
+                    break
+            if not description:
+                description = f"Code execution: {lines[0][:50]}..." if lines else "Unnamed code"
+
+            snippet = CodeSnippet(
+                id="",
+                name=f"auto_{language.value}_{hash(code) % 10000}",
+                language=language,
+                code=code,
+                description=description,
+                tags=["auto-saved", language.value],
+            )
+
+            await code_store.save_code(snippet)
+
+        except Exception as e:
+            PrintStyle.error(f"Failed to save code snippet: {e}")
 
     async def prepare_state(self, reset=False, session: int | None = None):
         self.state: State | None = self.agent.get_data("_cet_state")

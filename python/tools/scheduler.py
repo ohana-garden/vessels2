@@ -11,6 +11,23 @@ from python.helpers.task_scheduler import (
 from agent import AgentContext
 from python.helpers import persist_chat
 from python.helpers.projects import get_context_project_name, load_basic_project_data
+from python.helpers.print_style import PrintStyle
+
+# Graph-based code storage (A0 framework)
+try:
+    from python.helpers.code_store import (
+        CodeStore,
+        CodeSnippet,
+        CodeLanguage,
+        get_code_store,
+    )
+    from python.helpers.task_scheduler_graph import (
+        GraphEnabledScheduler,
+        get_graph_scheduler,
+    )
+    GRAPH_SCHEDULER_AVAILABLE = True
+except ImportError:
+    GRAPH_SCHEDULER_AVAILABLE = False
 
 DEFAULT_WAIT_TIMEOUT = 300
 
@@ -18,6 +35,7 @@ DEFAULT_WAIT_TIMEOUT = 300
 class SchedulerTool(Tool):
 
     async def execute(self, **kwargs):
+        # Task operations
         if self.method == "list_tasks":
             return await self.list_tasks(**kwargs)
         elif self.method == "find_task_by_name":
@@ -36,6 +54,21 @@ class SchedulerTool(Tool):
             return await self.create_planned_task(**kwargs)
         elif self.method == "wait_for_task":
             return await self.wait_for_task(**kwargs)
+        # Code snippet operations (A0 framework)
+        elif self.method == "save_code":
+            return await self.save_code(**kwargs)
+        elif self.method == "get_code":
+            return await self.get_code(**kwargs)
+        elif self.method == "search_code":
+            return await self.search_code(**kwargs)
+        elif self.method == "list_code":
+            return await self.list_code(**kwargs)
+        elif self.method == "link_code_to_task":
+            return await self.link_code_to_task(**kwargs)
+        elif self.method == "search_tasks":
+            return await self.search_tasks_semantic(**kwargs)
+        elif self.method == "get_task_with_code":
+            return await self.get_task_with_code(**kwargs)
         else:
             return Response(message=f"Unknown method '{self.name}:{self.method}'", break_loop=False)
 
@@ -278,3 +311,176 @@ class SchedulerTool(Tool):
             message=f"*Task*: {task_uuid}\n*State*: {task.state}\n*Last run*: {serialize_datetime(task.last_run)}\n*Result*:\n{task.last_result}",
             break_loop=False
         )
+
+    # =========================================================================
+    # Code Snippet Operations (A0 Framework)
+    # =========================================================================
+
+    async def save_code(self, **kwargs) -> Response:
+        """Save a reusable code snippet to the graph store."""
+        if not GRAPH_SCHEDULER_AVAILABLE:
+            return Response(message="Graph scheduler not available. Code snippets require graph store.", break_loop=False)
+
+        name: str = kwargs.get("name", "")
+        language: str = kwargs.get("language", "python")
+        code: str = kwargs.get("code", "")
+        description: str = kwargs.get("description", "")
+        tags: list[str] = kwargs.get("tags", [])
+
+        if not name or not code:
+            return Response(message="Code snippet requires 'name' and 'code' parameters", break_loop=False)
+
+        try:
+            graph_scheduler = await get_graph_scheduler()
+            code_id = await graph_scheduler.save_code_snippet(
+                name=name,
+                language=language,
+                code=code,
+                description=description,
+                tags=tags,
+            )
+
+            if code_id:
+                return Response(message=f"Code snippet '{name}' saved: {code_id}", break_loop=False)
+            else:
+                return Response(message="Failed to save code snippet", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error saving code snippet: {e}", break_loop=False)
+
+    async def get_code(self, **kwargs) -> Response:
+        """Get a code snippet by ID."""
+        if not GRAPH_SCHEDULER_AVAILABLE:
+            return Response(message="Graph scheduler not available", break_loop=False)
+
+        code_id: str = kwargs.get("code_id", "")
+        if not code_id:
+            return Response(message="Code ID is required", break_loop=False)
+
+        try:
+            graph_scheduler = await get_graph_scheduler()
+            snippet = await graph_scheduler.get_code_snippet(code_id)
+
+            if snippet:
+                return Response(message=json.dumps(snippet.to_dict(), indent=4), break_loop=False)
+            else:
+                return Response(message=f"Code snippet not found: {code_id}", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error getting code snippet: {e}", break_loop=False)
+
+    async def search_code(self, **kwargs) -> Response:
+        """Search for code snippets using semantic search."""
+        if not GRAPH_SCHEDULER_AVAILABLE:
+            return Response(message="Graph scheduler not available", break_loop=False)
+
+        query: str = kwargs.get("query", "")
+        language: str | None = kwargs.get("language", None)
+        limit: int = kwargs.get("limit", 10)
+
+        if not query:
+            return Response(message="Search query is required", break_loop=False)
+
+        try:
+            graph_scheduler = await get_graph_scheduler()
+            snippets = await graph_scheduler.search_code(
+                query=query,
+                language=language,
+                limit=limit,
+            )
+
+            results = [s.to_dict() for s in snippets]
+            return Response(message=json.dumps(results, indent=4), break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error searching code: {e}", break_loop=False)
+
+    async def list_code(self, **kwargs) -> Response:
+        """List all code snippets."""
+        if not GRAPH_SCHEDULER_AVAILABLE:
+            return Response(message="Graph scheduler not available", break_loop=False)
+
+        language: str | None = kwargs.get("language", None)
+        limit: int = kwargs.get("limit", 50)
+
+        try:
+            code_store = await get_code_store()
+
+            lang = None
+            if language:
+                try:
+                    lang = CodeLanguage(language)
+                except ValueError:
+                    pass
+
+            snippets = await code_store.list_code(language=lang, limit=limit)
+            results = [s.to_dict() for s in snippets]
+            return Response(message=json.dumps(results, indent=4), break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error listing code: {e}", break_loop=False)
+
+    async def link_code_to_task(self, **kwargs) -> Response:
+        """Link a code snippet to a task for execution."""
+        if not GRAPH_SCHEDULER_AVAILABLE:
+            return Response(message="Graph scheduler not available", break_loop=False)
+
+        task_uuid: str = kwargs.get("task_uuid", "")
+        code_id: str = kwargs.get("code_id", "")
+
+        if not task_uuid or not code_id:
+            return Response(message="Both task_uuid and code_id are required", break_loop=False)
+
+        try:
+            graph_scheduler = await get_graph_scheduler()
+            success = await graph_scheduler.link_code_to_task(task_uuid, code_id)
+
+            if success:
+                return Response(message=f"Code {code_id} linked to task {task_uuid}", break_loop=False)
+            else:
+                return Response(message="Failed to link code to task", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error linking code to task: {e}", break_loop=False)
+
+    async def search_tasks_semantic(self, **kwargs) -> Response:
+        """Search for tasks using semantic search (graph-based)."""
+        if not GRAPH_SCHEDULER_AVAILABLE:
+            return Response(message="Graph scheduler not available. Use list_tasks for basic filtering.", break_loop=False)
+
+        query: str = kwargs.get("query", "")
+        limit: int = kwargs.get("limit", 10)
+
+        if not query:
+            return Response(message="Search query is required", break_loop=False)
+
+        try:
+            graph_scheduler = await get_graph_scheduler()
+            tasks = await graph_scheduler.search_tasks(query=query, limit=limit)
+
+            results = [t.to_dict() for t in tasks]
+            return Response(message=json.dumps(results, indent=4), break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error searching tasks: {e}", break_loop=False)
+
+    async def get_task_with_code(self, **kwargs) -> Response:
+        """Get a task with all its linked code snippets."""
+        if not GRAPH_SCHEDULER_AVAILABLE:
+            return Response(message="Graph scheduler not available", break_loop=False)
+
+        task_uuid: str = kwargs.get("task_uuid", "")
+        if not task_uuid:
+            return Response(message="Task UUID is required", break_loop=False)
+
+        try:
+            graph_scheduler = await get_graph_scheduler()
+            result = await graph_scheduler.get_tasks_with_code(task_uuid)
+
+            if result:
+                return Response(message=json.dumps(result, indent=4), break_loop=False)
+            else:
+                return Response(message=f"Task not found: {task_uuid}", break_loop=False)
+
+        except Exception as e:
+            return Response(message=f"Error getting task with code: {e}", break_loop=False)
