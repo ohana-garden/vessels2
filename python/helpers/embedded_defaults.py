@@ -1140,6 +1140,655 @@ def compute_gini_coefficient(kala_totals: list) -> float:
 
 
 # =============================================================================
+# HUME DEFAULTS - Voice & Persona System (Empathic Voice Interface)
+# =============================================================================
+
+HUME_DEFAULTS = {
+    "hume_voice": {
+        "code_type": "module",
+        "code": '''
+"""
+Hume Voice Integration - Empathic Voice Interface for Vessels Agents
+
+Every agent (including human proxies) gets a persona with a voice.
+Uses Hume.ai EVI for real-time emotionally intelligent voice interaction.
+
+Key concepts:
+- AgentPersona: Complete identity including voice, style, emotional profile
+- HumeConfig: EVI configuration (system prompt, voice, LLM)
+- VoiceSession: Real-time WebSocket session management
+- EmotionalState: Tracked emotional expressions during conversation
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional, Callable, Any
+import json
+
+
+# =============================================================================
+# Voice & Persona Enums
+# =============================================================================
+
+class VoiceStyle(str, Enum):
+    """Voice style characteristics."""
+    WARM = "warm"
+    PROFESSIONAL = "professional"
+    FRIENDLY = "friendly"
+    CALM = "calm"
+    ENERGETIC = "energetic"
+    NURTURING = "nurturing"
+    AUTHORITATIVE = "authoritative"
+    PLAYFUL = "playful"
+    WISE = "wise"
+    COMPASSIONATE = "compassionate"
+
+
+class EmotionCategory(str, Enum):
+    """Primary emotion categories from Hume's prosody model."""
+    JOY = "joy"
+    SADNESS = "sadness"
+    ANGER = "anger"
+    FEAR = "fear"
+    SURPRISE = "surprise"
+    DISGUST = "disgust"
+    CONTEMPT = "contempt"
+    INTEREST = "interest"
+    CONFUSION = "confusion"
+    CONCENTRATION = "concentration"
+    CALMNESS = "calmness"
+    EXCITEMENT = "excitement"
+    AMUSEMENT = "amusement"
+    AWKWARDNESS = "awkwardness"
+    BOREDOM = "boredom"
+    CONTEMPLATION = "contemplation"
+    DESIRE = "desire"
+    DETERMINATION = "determination"
+    DISAPPOINTMENT = "disappointment"
+    DISTRESS = "distress"
+    EMPATHY = "empathy"
+    ENTRANCEMENT = "entrancement"
+    ENVY = "envy"
+    GUILT = "guilt"
+    HORROR = "horror"
+    LOVE = "love"
+    NOSTALGIA = "nostalgia"
+    PAIN = "pain"
+    PRIDE = "pride"
+    REALIZATION = "realization"
+    RELIEF = "relief"
+    ROMANCE = "romance"
+    SHAME = "shame"
+    SYMPATHY = "sympathy"
+    TIREDNESS = "tiredness"
+    TRIUMPH = "triumph"
+
+
+class LLMProvider(str, Enum):
+    """Supported LLM providers for EVI."""
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    FIREWORKS = "fireworks"
+    CUSTOM = "custom"  # Your own server
+
+
+# =============================================================================
+# Core Data Structures
+# =============================================================================
+
+@dataclass
+class EmotionalState:
+    """
+    Emotional state detected from voice prosody.
+    Hume provides real-time emotion measurements.
+    """
+    timestamp: str = ""
+    emotions: dict = field(default_factory=dict)  # emotion -> confidence (0-1)
+    dominant_emotion: str = ""
+    arousal: float = 0.0  # low to high energy
+    valence: float = 0.0  # negative to positive
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+
+    def set_emotion(self, emotion: str, confidence: float):
+        self.emotions[emotion] = max(0.0, min(1.0, confidence))
+        # Update dominant
+        if self.emotions:
+            self.dominant_emotion = max(self.emotions, key=lambda k: self.emotions[k])
+        return self
+
+    def to_dict(self):
+        return {
+            "timestamp": self.timestamp,
+            "emotions": self.emotions,
+            "dominant_emotion": self.dominant_emotion,
+            "arousal": self.arousal,
+            "valence": self.valence,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)
+
+    @classmethod
+    def from_hume_response(cls, prosody_scores: dict):
+        """Parse Hume prosody response into EmotionalState."""
+        state = cls()
+        for emotion, score in prosody_scores.items():
+            state.set_emotion(emotion.lower().replace(" ", "_"), score)
+        return state
+
+
+@dataclass
+class VoiceProfile:
+    """
+    Voice characteristics for an agent.
+    Maps to Hume's voice configuration.
+    """
+    id: str = ""
+    name: str = ""
+    description: str = ""
+
+    # Hume voice settings
+    hume_voice_id: str = ""  # ID from Hume Voice Library or custom
+    voice_style: VoiceStyle = VoiceStyle.WARM
+
+    # Prosody characteristics (natural language descriptions for Octave)
+    pitch: str = "medium"           # low, medium, high
+    pace: str = "natural"           # slow, natural, fast
+    warmth: str = "warm"            # cool, neutral, warm
+    energy: str = "calm"            # calm, moderate, energetic
+
+    # Emotional expression tendencies
+    expressiveness: float = 0.7     # 0-1, how much emotion shows in voice
+    empathy_level: float = 0.8      # 0-1, responsiveness to user emotion
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name, "description": self.description,
+            "hume_voice_id": self.hume_voice_id, "voice_style": self.voice_style.value,
+            "pitch": self.pitch, "pace": self.pace, "warmth": self.warmth,
+            "energy": self.energy, "expressiveness": self.expressiveness,
+            "empathy_level": self.empathy_level,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        profile = cls(
+            id=d.get("id", ""), name=d.get("name", ""),
+            description=d.get("description", ""),
+            hume_voice_id=d.get("hume_voice_id", ""),
+            pitch=d.get("pitch", "medium"), pace=d.get("pace", "natural"),
+            warmth=d.get("warmth", "warm"), energy=d.get("energy", "calm"),
+            expressiveness=d.get("expressiveness", 0.7),
+            empathy_level=d.get("empathy_level", 0.8),
+        )
+        if "voice_style" in d:
+            profile.voice_style = VoiceStyle(d["voice_style"])
+        return profile
+
+    def to_hume_voice_description(self) -> str:
+        """Generate natural language voice description for Hume Octave."""
+        return f"A {self.warmth}, {self.voice_style.value} voice with {self.pitch} pitch, " \\
+               f"speaking at a {self.pace} pace with {self.energy} energy."
+
+
+@dataclass
+class AgentPersona:
+    """
+    Complete persona for an agent, including voice and behavioral traits.
+    Every agent in a vessel has a persona - this is their identity.
+    """
+    id: str = ""
+    name: str = ""
+    role: str = ""                  # e.g., "coordinator", "caregiver", "advisor"
+    description: str = ""
+
+    # Voice identity
+    voice: VoiceProfile = field(default_factory=VoiceProfile)
+
+    # Personality traits (influence system prompt)
+    traits: list = field(default_factory=list)          # e.g., ["patient", "curious", "supportive"]
+    communication_style: str = "conversational"          # formal, conversational, casual
+    cultural_context: str = ""                           # e.g., "Hawaiian", influences language/values
+
+    # Behavioral guidelines
+    primary_values: list = field(default_factory=list)   # aligned with moral geometry
+    boundaries: list = field(default_factory=list)       # what this persona won't do
+
+    # For human proxies
+    is_human_proxy: bool = False
+    human_id: str = ""              # if proxy, which human
+    proxy_role: str = ""            # which role of the human (parent, professional, etc.)
+
+    # Vessel membership
+    vessel_id: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
+        self.updated_at = self.created_at
+
+    def generate_system_prompt(self, context: dict = None) -> str:
+        """
+        Generate a system prompt for EVI based on this persona.
+        Context can include dynamic variables.
+        """
+        context = context or {}
+
+        prompt_parts = []
+
+        # Identity
+        prompt_parts.append(f"You are {self.name}, a {self.role}.")
+        if self.description:
+            prompt_parts.append(self.description)
+
+        # Personality
+        if self.traits:
+            prompt_parts.append(f"Your personality traits: {', '.join(self.traits)}.")
+
+        # Communication style
+        prompt_parts.append(f"Communicate in a {self.communication_style} style.")
+
+        # Cultural context
+        if self.cultural_context:
+            prompt_parts.append(f"Your cultural context is {self.cultural_context}. " +
+                               "Incorporate appropriate cultural values and expressions.")
+
+        # Values
+        if self.primary_values:
+            prompt_parts.append(f"Your core values: {', '.join(self.primary_values)}.")
+
+        # Voice guidance (for consistency)
+        if self.voice:
+            prompt_parts.append(f"Speak with {self.voice.warmth} warmth and {self.voice.energy} energy.")
+
+        # Boundaries
+        if self.boundaries:
+            prompt_parts.append(f"Important boundaries: {'; '.join(self.boundaries)}.")
+
+        # Emotional responsiveness
+        prompt_parts.append("Pay attention to the emotional tone of the user's voice. " +
+                           "Respond with appropriate empathy and adjust your tone accordingly.")
+
+        # Dynamic context
+        for key, value in context.items():
+            prompt_parts.append(f"{{{{${key}}}}}")  # Hume dynamic variable format
+
+        return "\\n\\n".join(prompt_parts)
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name, "role": self.role,
+            "description": self.description,
+            "voice": self.voice.to_dict() if self.voice else {},
+            "traits": self.traits, "communication_style": self.communication_style,
+            "cultural_context": self.cultural_context,
+            "primary_values": self.primary_values, "boundaries": self.boundaries,
+            "is_human_proxy": self.is_human_proxy, "human_id": self.human_id,
+            "proxy_role": self.proxy_role, "vessel_id": self.vessel_id,
+            "created_at": self.created_at, "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        persona = cls(
+            id=d.get("id", ""), name=d.get("name", ""), role=d.get("role", ""),
+            description=d.get("description", ""),
+            traits=d.get("traits", []),
+            communication_style=d.get("communication_style", "conversational"),
+            cultural_context=d.get("cultural_context", ""),
+            primary_values=d.get("primary_values", []),
+            boundaries=d.get("boundaries", []),
+            is_human_proxy=d.get("is_human_proxy", False),
+            human_id=d.get("human_id", ""),
+            proxy_role=d.get("proxy_role", ""),
+            vessel_id=d.get("vessel_id", ""),
+            created_at=d.get("created_at", ""),
+            updated_at=d.get("updated_at", ""),
+        )
+        if d.get("voice"):
+            persona.voice = VoiceProfile.from_dict(d["voice"])
+        return persona
+
+
+@dataclass
+class HumeEVIConfig:
+    """
+    Configuration for Hume EVI session.
+    Maps to Hume's config API.
+    """
+    id: str = ""
+    name: str = ""
+
+    # LLM settings
+    llm_provider: LLMProvider = LLMProvider.ANTHROPIC
+    llm_model: str = "claude-sonnet-4-20250514"
+
+    # Voice
+    voice_id: str = ""              # Hume voice library ID or custom
+    voice_description: str = ""     # Natural language for Octave
+
+    # System prompt
+    system_prompt: str = ""
+
+    # EVI version
+    evi_version: str = "3"          # EVI 3 or EVI 4-mini
+
+    # Session settings
+    language: str = "en"
+    enable_interruption: bool = True
+    max_duration_seconds: int = 3600
+
+    # Dynamic variables (user-specific context)
+    dynamic_variables: dict = field(default_factory=dict)
+
+    # Tool use (for agent capabilities)
+    tools: list = field(default_factory=list)
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name,
+            "llm_provider": self.llm_provider.value,
+            "llm_model": self.llm_model,
+            "voice_id": self.voice_id,
+            "voice_description": self.voice_description,
+            "system_prompt": self.system_prompt,
+            "evi_version": self.evi_version,
+            "language": self.language,
+            "enable_interruption": self.enable_interruption,
+            "max_duration_seconds": self.max_duration_seconds,
+            "dynamic_variables": self.dynamic_variables,
+            "tools": self.tools,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        config = cls(**{k: v for k, v in d.items()
+                       if k not in ["llm_provider"]})
+        if "llm_provider" in d:
+            config.llm_provider = LLMProvider(d["llm_provider"])
+        return config
+
+    @classmethod
+    def from_persona(cls, persona: AgentPersona, config_id: str = "") -> "HumeEVIConfig":
+        """Create EVI config from an agent persona."""
+        return cls(
+            id=config_id or f"config_{persona.id}",
+            name=f"{persona.name} Config",
+            voice_id=persona.voice.hume_voice_id if persona.voice else "",
+            voice_description=persona.voice.to_hume_voice_description() if persona.voice else "",
+            system_prompt=persona.generate_system_prompt(),
+        )
+
+
+@dataclass
+class VoiceSession:
+    """
+    Active voice session with Hume EVI.
+    Tracks conversation state and emotional flow.
+    """
+    id: str = ""
+    persona_id: str = ""
+    config_id: str = ""
+    vessel_id: str = ""
+
+    # Session state
+    is_active: bool = False
+    started_at: str = ""
+    ended_at: str = ""
+
+    # Conversation tracking
+    turn_count: int = 0
+    messages: list = field(default_factory=list)         # conversation history
+    emotional_trajectory: list = field(default_factory=list)  # EmotionalState over time
+
+    # Current state
+    current_emotion: dict = field(default_factory=dict)
+    last_user_emotion: dict = field(default_factory=dict)
+
+    # WebSocket connection info (runtime only, not persisted)
+    _websocket: Any = None
+    _callbacks: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.started_at:
+            self.started_at = datetime.now(timezone.utc).isoformat()
+
+    def add_message(self, role: str, content: str, emotion: EmotionalState = None):
+        """Add a message to the conversation."""
+        msg = {
+            "role": role,  # "user" or "assistant"
+            "content": content,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if emotion:
+            msg["emotion"] = emotion.to_dict()
+            self.emotional_trajectory.append(emotion.to_dict())
+            if role == "user":
+                self.last_user_emotion = emotion.to_dict()
+            else:
+                self.current_emotion = emotion.to_dict()
+
+        self.messages.append(msg)
+        self.turn_count += 1
+        return msg
+
+    def end_session(self):
+        """Mark session as ended."""
+        self.is_active = False
+        self.ended_at = datetime.now(timezone.utc).isoformat()
+
+    def get_emotional_summary(self) -> dict:
+        """Summarize emotional patterns from the session."""
+        if not self.emotional_trajectory:
+            return {"dominant_emotions": [], "average_valence": 0, "average_arousal": 0}
+
+        from collections import Counter
+        emotions = Counter()
+        valence_sum = 0
+        arousal_sum = 0
+
+        for state in self.emotional_trajectory:
+            if state.get("dominant_emotion"):
+                emotions[state["dominant_emotion"]] += 1
+            valence_sum += state.get("valence", 0)
+            arousal_sum += state.get("arousal", 0)
+
+        n = len(self.emotional_trajectory)
+        return {
+            "dominant_emotions": emotions.most_common(3),
+            "average_valence": valence_sum / n if n else 0,
+            "average_arousal": arousal_sum / n if n else 0,
+            "turn_count": self.turn_count,
+        }
+
+    def to_dict(self):
+        return {
+            "id": self.id, "persona_id": self.persona_id,
+            "config_id": self.config_id, "vessel_id": self.vessel_id,
+            "is_active": self.is_active, "started_at": self.started_at,
+            "ended_at": self.ended_at, "turn_count": self.turn_count,
+            "messages": self.messages,
+            "emotional_trajectory": self.emotional_trajectory,
+            "current_emotion": self.current_emotion,
+            "last_user_emotion": self.last_user_emotion,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**{k: v for k, v in d.items()
+                     if not k.startswith("_")})
+
+
+# =============================================================================
+# Hume Client Wrapper (async, uses hume SDK)
+# =============================================================================
+
+class HumeVoiceClient:
+    """
+    Wrapper for Hume EVI WebSocket client.
+    Handles connection, callbacks, and session management.
+
+    Usage:
+        client = HumeVoiceClient(api_key="...")
+        session = await client.start_session(persona)
+        # ... conversation happens via callbacks
+        await client.end_session(session.id)
+    """
+
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key
+        self._sessions: dict = {}  # session_id -> VoiceSession
+        self._hume_client = None
+
+    async def initialize(self):
+        """Initialize the Hume client."""
+        if self.api_key:
+            # Import Hume SDK (deferred to avoid import errors if not installed)
+            try:
+                from hume import AsyncHumeClient
+                self._hume_client = AsyncHumeClient(api_key=self.api_key)
+            except ImportError:
+                raise ImportError("Hume SDK not installed. Run: pip install hume[microphone]")
+
+    async def start_session(
+        self,
+        persona: AgentPersona,
+        on_message: Callable = None,
+        on_emotion: Callable = None,
+        on_error: Callable = None,
+    ) -> VoiceSession:
+        """
+        Start a voice session with the given persona.
+
+        Args:
+            persona: AgentPersona defining the voice and behavior
+            on_message: Callback for messages (role, content, emotion)
+            on_emotion: Callback for emotion updates
+            on_error: Callback for errors
+
+        Returns: VoiceSession object
+        """
+        from python.helpers import guids
+
+        session = VoiceSession(
+            id=guids.generate_id(12),
+            persona_id=persona.id,
+            vessel_id=persona.vessel_id,
+            is_active=True,
+        )
+
+        # Create EVI config from persona
+        config = HumeEVIConfig.from_persona(persona, session.id)
+        session.config_id = config.id
+
+        # Store callbacks
+        session._callbacks = {
+            "on_message": on_message,
+            "on_emotion": on_emotion,
+            "on_error": on_error,
+        }
+
+        self._sessions[session.id] = session
+        return session
+
+    async def send_audio(self, session_id: str, audio_data: bytes):
+        """Send audio data to an active session."""
+        session = self._sessions.get(session_id)
+        if not session or not session.is_active:
+            raise ValueError(f"No active session: {session_id}")
+        # Audio would be sent via WebSocket
+        pass
+
+    async def send_text(self, session_id: str, text: str):
+        """Send text input to an active session (text-to-speech mode)."""
+        session = self._sessions.get(session_id)
+        if not session or not session.is_active:
+            raise ValueError(f"No active session: {session_id}")
+        # Text would be sent via WebSocket
+        pass
+
+    async def end_session(self, session_id: str) -> VoiceSession:
+        """End a voice session."""
+        session = self._sessions.get(session_id)
+        if session:
+            session.end_session()
+            # Close WebSocket
+            if session._websocket:
+                await session._websocket.close()
+        return session
+
+    def get_session(self, session_id: str) -> Optional[VoiceSession]:
+        """Get a session by ID."""
+        return self._sessions.get(session_id)
+
+
+# =============================================================================
+# Persona Templates (common archetypes)
+# =============================================================================
+
+def create_ohana_coordinator_persona(vessel_id: str, name: str = "Kahu") -> AgentPersona:
+    """Create a coordinator persona for Ohana Garden."""
+    return AgentPersona(
+        id=f"persona_{vessel_id}_coordinator",
+        name=name,
+        role="community coordinator",
+        description="A warm, supportive presence who helps coordinate community activities "
+                   "and ensures everyone feels included and valued.",
+        voice=VoiceProfile(
+            name=f"{name}'s Voice",
+            voice_style=VoiceStyle.NURTURING,
+            pitch="medium",
+            pace="natural",
+            warmth="warm",
+            energy="calm",
+            expressiveness=0.8,
+            empathy_level=0.9,
+        ),
+        traits=["patient", "inclusive", "organized", "encouraging", "culturally aware"],
+        communication_style="conversational",
+        cultural_context="Hawaiian",
+        primary_values=["aloha", "kuleana", "laulima", "mālama"],
+        boundaries=["I respect everyone's time and energy", "I don't make decisions for others"],
+        vessel_id=vessel_id,
+    )
+
+
+def create_human_proxy_persona(
+    vessel_id: str,
+    human_id: str,
+    human_name: str,
+    role: str,
+    traits: list = None,
+) -> AgentPersona:
+    """Create a human proxy persona."""
+    return AgentPersona(
+        id=f"proxy_{human_id}_{role}",
+        name=f"{human_name} ({role})",
+        role=role,
+        description=f"A proxy representing {human_name} in their {role} capacity.",
+        voice=VoiceProfile(
+            name=f"{human_name}'s {role} voice",
+            voice_style=VoiceStyle.WARM,
+        ),
+        traits=traits or ["authentic", "responsive"],
+        is_human_proxy=True,
+        human_id=human_id,
+        proxy_role=role,
+        vessel_id=vessel_id,
+    )
+''',
+    },
+}
+
+
+# =============================================================================
 # COMBINED DEFAULTS - All content merged
 # =============================================================================
 
@@ -1150,6 +1799,7 @@ def get_all_defaults():
     all_defaults.update(EXTENSION_DEFAULTS)
     all_defaults.update(MORAL_GEOMETRY_DEFAULTS)
     all_defaults.update(KALA_DEFAULTS)
+    all_defaults.update(HUME_DEFAULTS)
     return all_defaults
 
 def get_prompt_defaults():

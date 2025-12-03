@@ -98,6 +98,12 @@ class VesselNodeType(str, Enum):
     KALA_PARTICIPATION = "kala_participation"
     KALA_PATTERN = "kala_pattern"
     KALA_ATTRACTOR = "kala_attractor"
+    # Persona & Voice types - Agent Identity
+    PERSONA = "persona"
+    VOICE_PROFILE = "voice_profile"
+    VOICE_SESSION = "voice_session"
+    EMOTIONAL_STATE = "emotional_state"
+    HUME_CONFIG = "hume_config"
 
 
 class MemoryArea(str, Enum):
@@ -1290,6 +1296,265 @@ class GraphStore:
                 pass
 
         return None
+
+    # =========================================================================
+    # Persona & Voice Operations - Agent Identity System
+    # =========================================================================
+
+    async def save_persona(
+        self,
+        persona_id: str,
+        persona_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save an agent persona to the graph.
+
+        Args:
+            persona_id: Unique identifier for the persona
+            persona_data: Dict containing persona data (voice, traits, etc.)
+            vessel_id: Which vessel this persona belongs to
+
+        Returns: The persona ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.PERSONA.value,
+            "vessel_id": vessel_id,
+            "data": persona_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"personas/{vessel_id}/{persona_id}",
+            content,
+            content_type="persona"
+        )
+
+        return persona_id
+
+    async def load_persona(self, persona_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load a persona from the graph."""
+        content = await self.get_content(f"personas/{vessel_id}/{persona_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.PERSONA.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_personas(
+        self,
+        vessel_id: str = "default",
+        include_proxies: bool = True,
+    ) -> list[dict]:
+        """List all personas for a vessel."""
+        paths = await self.list_content(content_type="persona")
+
+        personas = []
+        prefix = f"personas/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.PERSONA.value:
+                            persona = data.get("data", {})
+                            if include_proxies or not persona.get("is_human_proxy"):
+                                personas.append(persona)
+                    except json.JSONDecodeError:
+                        pass
+
+        return personas
+
+    async def find_human_proxies(
+        self,
+        human_id: str,
+        vessel_id: str = "default",
+    ) -> list[dict]:
+        """Find all proxy personas for a specific human."""
+        all_personas = await self.list_personas(vessel_id, include_proxies=True)
+        return [p for p in all_personas if p.get("human_id") == human_id]
+
+    async def save_voice_session(
+        self,
+        session_id: str,
+        session_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """
+        Save a voice session to the graph.
+
+        Args:
+            session_id: Unique identifier for the session
+            session_data: Dict containing session data
+            vessel_id: Which vessel this session belongs to
+
+        Returns: The session ID
+        """
+        content = json.dumps({
+            "type": VesselNodeType.VOICE_SESSION.value,
+            "vessel_id": vessel_id,
+            "data": session_data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"voice_sessions/{vessel_id}/{session_id}",
+            content,
+            content_type="voice_session"
+        )
+
+        return session_id
+
+    async def load_voice_session(self, session_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load a voice session from the graph."""
+        content = await self.get_content(f"voice_sessions/{vessel_id}/{session_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.VOICE_SESSION.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def list_voice_sessions(
+        self,
+        vessel_id: str = "default",
+        persona_id: str = None,
+        active_only: bool = False,
+    ) -> list[dict]:
+        """List voice sessions, optionally filtered by persona or active status."""
+        paths = await self.list_content(content_type="voice_session")
+
+        sessions = []
+        prefix = f"voice_sessions/{vessel_id}/"
+
+        for path in paths:
+            if path.startswith(prefix):
+                content = await self.get_content(path)
+                if content:
+                    try:
+                        data = json.loads(content)
+                        if data.get("type") == VesselNodeType.VOICE_SESSION.value:
+                            session = data.get("data", {})
+                            # Apply filters
+                            if persona_id and session.get("persona_id") != persona_id:
+                                continue
+                            if active_only and not session.get("is_active"):
+                                continue
+                            sessions.append(session)
+                    except json.JSONDecodeError:
+                        pass
+
+        return sessions
+
+    async def save_hume_config(
+        self,
+        config_id: str,
+        config_data: dict,
+        vessel_id: str = "default",
+    ) -> str:
+        """Save a Hume EVI configuration."""
+        content = json.dumps({
+            "type": VesselNodeType.HUME_CONFIG.value,
+            "vessel_id": vessel_id,
+            "data": config_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self.save_content(
+            f"hume_configs/{vessel_id}/{config_id}",
+            content,
+            content_type="hume_config"
+        )
+
+        return config_id
+
+    async def load_hume_config(self, config_id: str, vessel_id: str = "default") -> Optional[dict]:
+        """Load a Hume EVI configuration."""
+        content = await self.get_content(f"hume_configs/{vessel_id}/{config_id}")
+
+        if content:
+            try:
+                data = json.loads(content)
+                if data.get("type") == VesselNodeType.HUME_CONFIG.value:
+                    return data.get("data")
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    async def get_persona_emotional_history(
+        self,
+        persona_id: str,
+        vessel_id: str = "default",
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        Get emotional history from voice sessions for a persona.
+        Returns emotional trajectories aggregated across sessions.
+        """
+        sessions = await self.list_voice_sessions(
+            vessel_id=vessel_id,
+            persona_id=persona_id
+        )
+
+        all_emotions = []
+        for session in sessions:
+            trajectory = session.get("emotional_trajectory", [])
+            for emotion in trajectory:
+                emotion["session_id"] = session.get("id")
+                all_emotions.append(emotion)
+
+        # Sort by timestamp and limit
+        all_emotions.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        return all_emotions[:limit]
+
+    async def get_vessel_emotional_state(
+        self,
+        vessel_id: str = "default",
+    ) -> dict:
+        """
+        Get aggregate emotional state across all active sessions in a vessel.
+        Useful for understanding community emotional climate.
+        """
+        sessions = await self.list_voice_sessions(
+            vessel_id=vessel_id,
+            active_only=True
+        )
+
+        if not sessions:
+            return {"active_sessions": 0, "emotions": {}}
+
+        from collections import Counter
+        emotion_counts = Counter()
+        valence_sum = 0
+        arousal_sum = 0
+        count = 0
+
+        for session in sessions:
+            current = session.get("current_emotion", {})
+            if current.get("dominant_emotion"):
+                emotion_counts[current["dominant_emotion"]] += 1
+            valence_sum += current.get("valence", 0)
+            arousal_sum += current.get("arousal", 0)
+            count += 1
+
+        return {
+            "active_sessions": len(sessions),
+            "dominant_emotions": emotion_counts.most_common(5),
+            "average_valence": valence_sum / count if count else 0,
+            "average_arousal": arousal_sum / count if count else 0,
+        }
 
     # =========================================================================
     # Utility Methods
