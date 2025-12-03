@@ -6,6 +6,8 @@ FalkorDB + Graphiti as the backend instead of FAISS.
 
 The API remains compatible with the original memory.py for
 seamless integration with existing agent code.
+
+A0 Framework: Includes guardian integration for sanitizing retrieved memories.
 """
 
 from datetime import datetime
@@ -23,6 +25,7 @@ from python.helpers.graph_store import (
     MemoryDocument,
     get_graph_store,
 )
+from python.helpers.guardians import guard_memory
 from agent import Agent, AgentContext
 import models
 import logging
@@ -231,6 +234,7 @@ class Memory:
         limit: int,
         threshold: float,
         filter: str = "",
+        apply_guardians: bool = True,
     ) -> list[Any]:
         """
         Search memories by semantic similarity.
@@ -240,6 +244,7 @@ class Memory:
             limit: Maximum number of results
             threshold: Minimum similarity threshold (0-1)
             filter: Optional filter expression
+            apply_guardians: Whether to sanitize results through guardians
 
         Returns:
             List of matching documents with metadata
@@ -259,6 +264,10 @@ class Memory:
             area=area,
             memory_subdir=self.memory_subdir,
         )
+
+        # Sanitize results through guardians
+        if apply_guardians:
+            results = [guard_memory(r, source=f"memory.{self.memory_subdir}") for r in results]
 
         # Convert to Document-like objects for compatibility
         return [_dict_to_document(r) for r in results]
