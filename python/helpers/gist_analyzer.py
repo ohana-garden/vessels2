@@ -1,15 +1,22 @@
 """
 Vessels Gist Analyzer
 
-Extracts understanding from multi-party conversations to drive canvas generation.
-Analyzes what's being discussed, what participants want, and what visual content
-would best illuminate the conversation.
+Extracts understanding from multi-party conversations using:
+- Graphiti: Entity extraction, semantic search, relationship traversal
+- Memory: Recall relevant past interactions
+- Audio Analysis: Voice emotion detection (Hume.ai integration point)
+- Graph Queries: Entity relationships and temporal patterns
+
+No lazy LLM-only analysis - uses the full toolkit.
 """
 
 import asyncio
 import json
-from typing import Any, Optional, List, Dict, TYPE_CHECKING
-from dataclasses import dataclass
+import re
+from datetime import datetime, timezone
+from typing import Any, Optional, List, Dict, Tuple, TYPE_CHECKING
+from dataclasses import dataclass, field
+from enum import Enum
 
 from python.helpers.canvas import (
     ConversationRoom,
@@ -19,255 +26,801 @@ from python.helpers.canvas import (
     EmotionalState,
     EntityAgent,
     HumanProxy,
+    Participant,
 )
+from python.helpers.graph_store import GraphStore, get_graph_store, MemoryArea
 from python.helpers.print_style import PrintStyle
-from python.helpers import dirty_json
 
 if TYPE_CHECKING:
     from agent import Agent
 
 
 # =============================================================================
-# Gist Analysis Prompts
+# Audio Analysis Integration
 # =============================================================================
 
-GIST_SYSTEM_PROMPT = """You analyze multi-party conversations to extract their essence.
+class AudioFeatures:
+    """
+    Audio features extracted from voice input.
+    Integration point for Hume.ai, Whisper, or other audio analysis.
+    """
 
-The conversations involve:
-- Human proxies: Represent humans in specific roles (gardener, coordinator, neighbor)
-- Entity agents: Represent non-human things (plants, machines, places, biomes)
+    def __init__(self):
+        self.pitch_mean: float = 0.0
+        self.pitch_variance: float = 0.0
+        self.speech_rate: float = 0.0  # words per minute
+        self.pause_ratio: float = 0.0  # pauses / speech duration
+        self.volume_mean: float = 0.0
+        self.volume_variance: float = 0.0
 
-Your job is to understand:
-1. What topics are being discussed
-2. What the participants are trying to accomplish
-3. What entities/locations/times are mentioned
-4. The emotional tone of the conversation
-5. What visual content would illuminate the discussion
+        # Hume.ai prosody scores (when available)
+        self.prosody_scores: Dict[str, float] = {}
 
-Output valid JSON matching the schema provided."""
+        # Raw emotion predictions
+        self.emotion_scores: Dict[str, float] = {}
 
-GIST_ANALYSIS_PROMPT = """Analyze this conversation and extract its gist.
+    @classmethod
+    def from_hume_response(cls, hume_data: Dict) -> "AudioFeatures":
+        """Parse Hume.ai EVI response into AudioFeatures."""
+        features = cls()
 
-PARTICIPANTS:
-{participants}
+        # Extract prosody predictions
+        if "prosody" in hume_data:
+            prosody = hume_data["prosody"]
+            features.prosody_scores = {
+                e["name"]: e["score"]
+                for e in prosody.get("predictions", [])
+            }
 
-RECENT CONVERSATION:
-{conversation}
+        # Extract emotion predictions
+        if "emotions" in hume_data:
+            features.emotion_scores = {
+                e["name"]: e["score"]
+                for e in hume_data["emotions"]
+            }
 
-CURRENT CANVAS:
-{canvas_state}
+        # Extract from models array (Hume API format)
+        if "models" in hume_data:
+            for model in hume_data.get("models", []):
+                if "prosody" in model:
+                    for pred in model["prosody"].get("predictions", []):
+                        for emotion in pred.get("emotions", []):
+                            features.emotion_scores[emotion["name"]] = emotion["score"]
 
-Extract:
-1. topics: List of topic keywords being discussed
-2. intent: What participants are trying to accomplish (one sentence)
-3. entities_discussed: IDs of entities mentioned in conversation
-4. locations_mentioned: Any locations with lat/lng if known, or names
-5. time_references: Any dates, times, or scheduling mentioned
-6. emotional_tone: One of: neutral, excited, stressed, confused, frustrated, satisfied, curious, urgent
-7. suggested_content: What canvas content types would help. Options: map, calendar, visualization, gallery, entity_view, relationship, ambient
-8. action_items: Any tasks or actions mentioned
-9. questions_pending: Any unanswered questions
+        return features
 
-JSON schema:
-{{
-    "topics": ["topic1", "topic2"],
-    "intent": "string describing goal",
-    "entities_discussed": ["entity_id1", "entity_id2"],
-    "locations_mentioned": [{{"name": "string", "lat": number, "lng": number}}],
-    "time_references": ["tomorrow morning", "next Tuesday"],
-    "emotional_tone": "neutral|excited|stressed|confused|frustrated|satisfied|curious|urgent",
-    "suggested_content": ["map", "calendar"],
-    "action_items": ["action1", "action2"],
-    "questions_pending": ["question1"]
-}}
+    @classmethod
+    def from_whisper_result(cls, whisper_data: Dict) -> "AudioFeatures":
+        """Extract basic features from Whisper transcription result."""
+        features = cls()
 
-Respond with only valid JSON."""
+        # Whisper provides segments with timing
+        segments = whisper_data.get("segments", [])
+        if segments:
+            # Calculate speech rate from segment timing
+            total_duration = segments[-1].get("end", 0) - segments[0].get("start", 0)
+            total_words = sum(len(s.get("text", "").split()) for s in segments)
+            if total_duration > 0:
+                features.speech_rate = (total_words / total_duration) * 60
 
+            # Calculate pause ratio
+            total_pause = 0
+            for i in range(1, len(segments)):
+                gap = segments[i].get("start", 0) - segments[i-1].get("end", 0)
+                if gap > 0.1:  # Count gaps > 100ms as pauses
+                    total_pause += gap
 
-CONTENT_PREDICTION_PROMPT = """Based on the conversation gist, predict what content should be generated.
+            if total_duration > 0:
+                features.pause_ratio = total_pause / total_duration
 
-GIST:
-{gist}
+        return features
 
-AVAILABLE ENTITIES:
-{entities}
+    def infer_emotional_state(self) -> Tuple[EmotionalState, float]:
+        """
+        Infer emotional state from audio features.
+        Returns (state, confidence).
+        """
+        # If we have Hume emotion scores, use them directly
+        if self.emotion_scores:
+            return self._from_hume_emotions()
 
-CURRENT CANVAS:
-{canvas_state}
+        # Otherwise infer from prosody/speech patterns
+        return self._from_prosody()
 
-For each suggested content type, specify what exactly to show:
+    def _from_hume_emotions(self) -> Tuple[EmotionalState, float]:
+        """Map Hume emotion scores to EmotionalState."""
+        scores = self.emotion_scores
 
-If map is suggested:
-- What locations to show
-- Any routes to draw
-- What to highlight
+        # Map Hume emotions to our states
+        mappings = [
+            (EmotionalState.EXCITED, ["Excitement", "Joy", "Enthusiasm", "Amusement"]),
+            (EmotionalState.STRESSED, ["Anxiety", "Fear", "Distress", "Tension"]),
+            (EmotionalState.CONFUSED, ["Confusion", "Doubt", "Uncertainty"]),
+            (EmotionalState.FRUSTRATED, ["Frustration", "Anger", "Annoyance", "Contempt"]),
+            (EmotionalState.SATISFIED, ["Satisfaction", "Contentment", "Relief", "Calmness"]),
+            (EmotionalState.CURIOUS, ["Interest", "Curiosity", "Concentration", "Contemplation"]),
+            (EmotionalState.URGENT, ["Determination", "Realization"]),
+        ]
 
-If calendar is suggested:
-- What time range
-- What events to show
-- What to highlight
+        best_state = EmotionalState.NEUTRAL
+        best_score = 0.0
 
-If visualization is suggested:
-- What data to show
-- What chart type
-- What to emphasize
+        for state, hume_names in mappings:
+            state_score = max(
+                (scores.get(name, 0.0) for name in hume_names),
+                default=0.0
+            )
+            if state_score > best_score:
+                best_score = state_score
+                best_state = state
 
-If gallery is suggested:
-- What images
-- Related to which entities
+        return (best_state, best_score)
 
-If entity_view is suggested:
-- Which entity to focus on
-- What aspects to show
+    def _from_prosody(self) -> Tuple[EmotionalState, float]:
+        """Infer emotion from prosodic features."""
+        # High pitch variance + fast speech = excited
+        if self.pitch_variance > 0.7 and self.speech_rate > 160:
+            return (EmotionalState.EXCITED, 0.6)
 
-Output as JSON:
-{{
-    "content_specs": [
-        {{
-            "type": "map|calendar|visualization|gallery|entity_view|ambient",
-            "spec": {{ ...type-specific details... }},
-            "priority": 1-10,
-            "reason": "why this content helps"
-        }}
-    ],
-    "ambient_mood": "calm|energetic|focused|celebratory|concerned"
-}}"""
+        # High pause ratio + slow speech = confused or stressed
+        if self.pause_ratio > 0.3 and self.speech_rate < 100:
+            return (EmotionalState.CONFUSED, 0.5)
+
+        # Very fast speech + low pause ratio = urgent
+        if self.speech_rate > 180 and self.pause_ratio < 0.1:
+            return (EmotionalState.URGENT, 0.5)
+
+        # High volume variance = stressed or frustrated
+        if self.volume_variance > 0.6:
+            return (EmotionalState.STRESSED, 0.4)
+
+        return (EmotionalState.NEUTRAL, 0.3)
 
 
 # =============================================================================
-# Gist Analyzer
+# Graphiti Integration
+# =============================================================================
+
+class GraphitiAnalyzer:
+    """
+    Uses Graphiti for entity extraction and relationship analysis.
+    """
+
+    def __init__(self):
+        self._graph_store: Optional[GraphStore] = None
+
+    async def _ensure_store(self) -> GraphStore:
+        if self._graph_store is None:
+            self._graph_store = await get_graph_store()
+        return self._graph_store
+
+    async def add_conversation_episode(
+        self,
+        room_id: str,
+        turn: ConversationTurn,
+        participant: Participant,
+    ) -> None:
+        """
+        Add a conversation turn as an episode for entity extraction.
+        Graphiti will automatically extract entities and relationships.
+        """
+        store = await self._ensure_store()
+
+        # Format episode content with participant context
+        episode_content = f"""
+[Conversation Turn in Room {room_id}]
+Speaker: {participant.name} ({participant.participant_type.value})
+Content: {turn.content}
+Timestamp: {turn.timestamp.isoformat()}
+"""
+
+        if isinstance(participant, EntityAgent):
+            episode_content += f"Entity Kind: {participant.entity_kind.value}\n"
+            if participant.location:
+                episode_content += f"Location: {participant.location}\n"
+
+        elif isinstance(participant, HumanProxy):
+            episode_content += f"Role: {participant.role}\n"
+
+        # Add to Graphiti - this triggers entity extraction
+        try:
+            from graphiti_core.nodes import EpisodeType
+            await store.graphiti.add_episode(
+                name=f"turn_{turn.id}",
+                episode_body=episode_content,
+                source=EpisodeType.message,
+                reference_time=turn.timestamp,
+                group_id=f"room:{room_id}",
+            )
+        except Exception as e:
+            PrintStyle.error(f"Failed to add episode to Graphiti: {e}")
+
+    async def search_related_facts(
+        self,
+        query: str,
+        room_id: str,
+        limit: int = 10,
+    ) -> List[Dict]:
+        """
+        Search for facts related to the conversation query.
+        Uses Graphiti's hybrid search (semantic + keyword + graph).
+        """
+        store = await self._ensure_store()
+
+        try:
+            results = await store.graphiti.search(
+                query=query,
+                num_results=limit,
+                group_ids=[f"room:{room_id}"],
+            )
+
+            facts = []
+            for result in results:
+                facts.append({
+                    "id": getattr(result, "uuid", ""),
+                    "fact": getattr(result, "fact", str(result)),
+                    "score": getattr(result, "score", 1.0),
+                    "entity_name": getattr(result, "name", None),
+                    "created_at": getattr(result, "created_at", None),
+                })
+
+            return facts
+
+        except Exception as e:
+            PrintStyle.error(f"Graphiti search failed: {e}")
+            return []
+
+    async def get_entity_relationships(
+        self,
+        entity_ids: List[str],
+        room_id: str,
+    ) -> List[Dict]:
+        """
+        Query graph for relationships between entities.
+        """
+        store = await self._ensure_store()
+
+        if not entity_ids:
+            return []
+
+        try:
+            # Cypher query to find relationships
+            entity_names = ", ".join(f"'{eid}'" for eid in entity_ids)
+            query = f"""
+            MATCH (e1:Entity)-[r]-(e2:Entity)
+            WHERE e1.name IN [{entity_names}] OR e2.name IN [{entity_names}]
+            RETURN e1.name as source, type(r) as relationship, e2.name as target,
+                   r.fact as fact
+            LIMIT 50
+            """
+
+            results = await store._driver.execute_query(query)
+
+            relationships = []
+            for row in results or []:
+                relationships.append({
+                    "source": row.get("source"),
+                    "relationship": row.get("relationship"),
+                    "target": row.get("target"),
+                    "fact": row.get("fact"),
+                })
+
+            return relationships
+
+        except Exception as e:
+            PrintStyle.error(f"Relationship query failed: {e}")
+            return []
+
+    async def extract_entities_from_text(self, text: str) -> List[Dict]:
+        """
+        Extract entities mentioned in text using Graphiti's search.
+        """
+        store = await self._ensure_store()
+
+        try:
+            # Search for entities mentioned in text
+            results = await store.graphiti.search(
+                query=text,
+                num_results=10,
+            )
+
+            extracted = []
+            seen = set()
+            for result in results:
+                name = getattr(result, "name", None)
+                if name and name not in seen:
+                    seen.add(name)
+                    extracted.append({
+                        "name": name,
+                        "type": getattr(result, "entity_type", "unknown"),
+                        "summary": getattr(result, "summary", ""),
+                    })
+
+            return extracted
+
+        except Exception as e:
+            PrintStyle.error(f"Entity extraction failed: {e}")
+            return []
+
+
+# =============================================================================
+# Memory Integration
+# =============================================================================
+
+class MemoryAnalyzer:
+    """
+    Uses the graph-based memory system to recall relevant context.
+    """
+
+    async def recall_relevant_memories(
+        self,
+        query: str,
+        memory_subdir: str = "default",
+        limit: int = 5,
+    ) -> List[Dict]:
+        """
+        Search memories for relevant past interactions.
+        """
+        try:
+            store = await get_graph_store()
+            results = await store.search_memories(
+                query=query,
+                limit=limit,
+                threshold=0.6,
+                memory_subdir=memory_subdir,
+            )
+            return results
+
+        except Exception as e:
+            PrintStyle.error(f"Memory recall failed: {e}")
+            return []
+
+    async def find_past_interactions(
+        self,
+        entity_ids: List[str],
+        memory_subdir: str = "default",
+    ) -> List[Dict]:
+        """
+        Find past interactions involving specific entities.
+        """
+        if not entity_ids:
+            return []
+
+        # Search for memories mentioning these entities
+        query = " OR ".join(entity_ids)
+        return await self.recall_relevant_memories(query, memory_subdir)
+
+
+# =============================================================================
+# Content Inference
+# =============================================================================
+
+class ContentInferrer:
+    """
+    Infers appropriate canvas content from conversation signals.
+    No LLM needed - uses pattern matching and entity analysis.
+    """
+
+    # Keywords that suggest specific content types
+    CONTENT_TRIGGERS = {
+        CanvasContentType.MAP: [
+            "where", "location", "place", "route", "directions", "map",
+            "garden", "kitchen", "farm", "address", "area", "distance",
+            "near", "far", "between", "path", "drive", "walk", "pickup",
+        ],
+        CanvasContentType.CALENDAR: [
+            "when", "schedule", "time", "date", "calendar", "tomorrow",
+            "today", "week", "month", "available", "busy", "meeting",
+            "appointment", "pickup", "delivery", "shift", "slot",
+        ],
+        CanvasContentType.VISUALIZATION: [
+            "how many", "count", "total", "data", "chart", "graph",
+            "statistics", "impact", "numbers", "percentage", "trend",
+            "increase", "decrease", "compare", "analysis", "meals",
+        ],
+        CanvasContentType.GALLERY: [
+            "show", "picture", "photo", "image", "look", "see",
+            "what does", "looks like",
+        ],
+        CanvasContentType.ENTITY_VIEW: [
+            "tell me about", "what is", "describe", "details",
+            "information", "status", "health", "condition",
+        ],
+    }
+
+    # Emotional state to ambient mood mapping
+    EMOTION_TO_MOOD = {
+        EmotionalState.EXCITED: "energetic",
+        EmotionalState.STRESSED: "concerned",
+        EmotionalState.CONFUSED: "focused",
+        EmotionalState.FRUSTRATED: "concerned",
+        EmotionalState.SATISFIED: "celebratory",
+        EmotionalState.CURIOUS: "focused",
+        EmotionalState.URGENT: "focused",
+        EmotionalState.NEUTRAL: "calm",
+    }
+
+    # Location patterns for Puna, Hawaii
+    PUNA_LOCATIONS = {
+        "pahoa": {"lat": 19.4969, "lng": -154.9453},
+        "kalapana": {"lat": 19.3589, "lng": -154.9714},
+        "volcano": {"lat": 19.4300, "lng": -155.2366},
+        "hilo": {"lat": 19.7074, "lng": -155.0847},
+        "keaau": {"lat": 19.5122, "lng": -155.0375},
+        "leilani": {"lat": 19.4639, "lng": -154.9145},
+        "pohoiki": {"lat": 19.4561, "lng": -154.8519},
+        "seaview": {"lat": 19.4833, "lng": -154.9333},
+        "nanawale": {"lat": 19.5042, "lng": -154.9111},
+        "orchidland": {"lat": 19.5333, "lng": -155.0667},
+    }
+
+    def infer_content_types(
+        self,
+        conversation_text: str,
+        entities_discussed: List[str],
+        locations_mentioned: List[Dict],
+        time_references: List[str],
+    ) -> List[CanvasContentType]:
+        """
+        Infer appropriate content types from conversation signals.
+        """
+        suggested = []
+        text_lower = conversation_text.lower()
+
+        # Check each content type's triggers
+        for content_type, triggers in self.CONTENT_TRIGGERS.items():
+            if any(trigger in text_lower for trigger in triggers):
+                suggested.append(content_type)
+
+        # Add based on structured data
+        if locations_mentioned and CanvasContentType.MAP not in suggested:
+            suggested.append(CanvasContentType.MAP)
+
+        if time_references and CanvasContentType.CALENDAR not in suggested:
+            suggested.append(CanvasContentType.CALENDAR)
+
+        if entities_discussed and CanvasContentType.ENTITY_VIEW not in suggested:
+            # Only suggest entity view if discussing specific entities
+            if any(phrase in text_lower for phrase in ["about", "how is", "what about"]):
+                suggested.append(CanvasContentType.ENTITY_VIEW)
+
+        return suggested
+
+    def infer_ambient_mood(self, emotional_state: EmotionalState) -> str:
+        """Get ambient mood from emotional state."""
+        return self.EMOTION_TO_MOOD.get(emotional_state, "calm")
+
+    def extract_locations_from_text(self, text: str) -> List[Dict]:
+        """
+        Extract location references from text.
+        Returns list of {name, lat?, lng?}
+        """
+        locations = []
+        text_lower = text.lower()
+
+        # Check known Puna locations
+        for name, coords in self.PUNA_LOCATIONS.items():
+            if name in text_lower:
+                locations.append({
+                    "name": name.title(),
+                    "lat": coords["lat"],
+                    "lng": coords["lng"],
+                })
+
+        # Check for common location words
+        location_words = ["garden", "kitchen", "farm", "house", "home"]
+        for word in location_words:
+            if word in text_lower and not any(loc["name"].lower() == word for loc in locations):
+                # Add without coordinates - will need geocoding
+                locations.append({"name": word.title()})
+
+        return locations
+
+    def extract_time_references(self, text: str) -> List[str]:
+        """
+        Extract time references from text.
+        """
+        time_patterns = [
+            "today", "tomorrow", "yesterday",
+            "this morning", "this afternoon", "this evening", "tonight",
+            "next week", "next month", "this week",
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        ]
+
+        text_lower = text.lower()
+        found = []
+
+        for pattern in time_patterns:
+            if pattern in text_lower:
+                found.append(pattern)
+
+        # Also look for time patterns like "at 3pm", "9:00"
+        time_regex = r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\b'
+        matches = re.findall(time_regex, text)
+        found.extend(matches)
+
+        return found
+
+
+# =============================================================================
+# Gist Analyzer - Main Class
 # =============================================================================
 
 class GistAnalyzer:
     """
-    Analyzes conversations to extract meaning and drive canvas generation.
+    Analyzes conversations using Graphiti, Memory, and Audio analysis.
+    No lazy LLM calls - uses actual infrastructure.
     """
 
     def __init__(self, agent: "Agent"):
         self.agent = agent
-        self._last_analysis: Optional[ConversationGist] = None
+        self.graphiti = GraphitiAnalyzer()
+        self.memory = MemoryAnalyzer()
+        self.content_inferrer = ContentInferrer()
         self._analysis_lock = asyncio.Lock()
 
-    async def analyze(self, room: ConversationRoom,
-                      force: bool = False) -> ConversationGist:
+    async def analyze(
+        self,
+        room: ConversationRoom,
+        audio_features: Optional[AudioFeatures] = None,
+    ) -> ConversationGist:
         """
-        Analyze the current conversation state.
+        Analyze conversation using all available tools.
 
         Args:
-            room: The conversation room to analyze
-            force: Force re-analysis even if recent
+            room: The conversation room
+            audio_features: Optional audio analysis from voice input
 
         Returns:
             ConversationGist with extracted understanding
         """
         async with self._analysis_lock:
-            # Get conversation context
-            participants_text = self._format_participants(room)
+            # Get recent conversation text
             conversation_text = room.get_conversation_text(20)
-            canvas_text = self._format_canvas(room)
-
-            # Skip if no new content
-            if not conversation_text and not force:
+            if not conversation_text:
                 return room.gist
 
-            try:
-                # Call LLM for analysis
-                result = await self.agent.call_utility_model(
-                    system=GIST_SYSTEM_PROMPT,
-                    message=GIST_ANALYSIS_PROMPT.format(
-                        participants=participants_text,
-                        conversation=conversation_text,
-                        canvas_state=canvas_text,
-                    ),
-                )
+            # 1. Add recent turns to Graphiti for entity extraction
+            recent_turns = room.get_recent_turns(5)
+            for turn in recent_turns:
+                participant = room.get_participant(turn.participant_id)
+                if participant:
+                    await self.graphiti.add_conversation_episode(
+                        room.id, turn, participant
+                    )
 
-                # Parse response
-                gist_data = dirty_json.try_parse(result)
-                if not gist_data:
-                    PrintStyle.error(f"Failed to parse gist: {result}")
-                    return room.gist
+            # 2. Extract entities from Graphiti
+            entities_found = await self.graphiti.extract_entities_from_text(
+                conversation_text
+            )
+            entity_ids = [e["name"] for e in entities_found]
 
-                # Build ConversationGist
-                gist = ConversationGist(
-                    topics=gist_data.get("topics", []),
-                    intent=gist_data.get("intent", ""),
-                    entities_discussed=gist_data.get("entities_discussed", []),
-                    locations_mentioned=gist_data.get("locations_mentioned", []),
-                    time_references=gist_data.get("time_references", []),
-                    emotional_tone=EmotionalState(
-                        gist_data.get("emotional_tone", "neutral")
-                    ),
-                    suggested_content=[
-                        CanvasContentType(c) for c in gist_data.get("suggested_content", [])
-                        if c in [e.value for e in CanvasContentType]
-                    ],
-                    action_items=gist_data.get("action_items", []),
-                    questions_pending=gist_data.get("questions_pending", []),
-                )
+            # Also include room entity agents
+            for agent in room.get_entity_agents():
+                if agent.id not in entity_ids:
+                    entity_ids.append(agent.id)
 
-                # Update room
-                room.update_gist(gist)
-                self._last_analysis = gist
-                return gist
-
-            except Exception as e:
-                PrintStyle.error(f"Gist analysis failed: {e}")
-                return room.gist
-
-    async def predict_content(self, room: ConversationRoom) -> List[Dict]:
-        """
-        Predict what canvas content should be generated.
-
-        Returns list of content specifications.
-        """
-        gist = room.gist
-        if not gist.suggested_content:
-            return []
-
-        # Format context
-        entities_text = self._format_entities(room)
-        canvas_text = self._format_canvas(room)
-
-        try:
-            result = await self.agent.call_utility_model(
-                system="You generate content specifications for a dynamic UI canvas.",
-                message=CONTENT_PREDICTION_PROMPT.format(
-                    gist=json.dumps(gist.to_dict(), indent=2),
-                    entities=entities_text,
-                    canvas_state=canvas_text,
-                ),
+            # 3. Get entity relationships from graph
+            relationships = await self.graphiti.get_entity_relationships(
+                entity_ids, room.id
             )
 
-            prediction = dirty_json.try_parse(result)
-            if not prediction:
-                return []
+            # 4. Search for related facts
+            related_facts = await self.graphiti.search_related_facts(
+                conversation_text, room.id, limit=5
+            )
 
-            return prediction.get("content_specs", [])
+            # 5. Recall relevant memories
+            memories = await self.memory.recall_relevant_memories(
+                conversation_text, limit=3
+            )
 
-        except Exception as e:
-            PrintStyle.error(f"Content prediction failed: {e}")
-            return []
+            # 6. Extract locations and times from text
+            locations = self.content_inferrer.extract_locations_from_text(
+                conversation_text
+            )
+            time_refs = self.content_inferrer.extract_time_references(
+                conversation_text
+            )
 
-    async def should_update_canvas(self, room: ConversationRoom,
-                                   turns_since_update: int = 3) -> bool:
+            # 7. Determine emotional state
+            if audio_features:
+                emotional_state, confidence = audio_features.infer_emotional_state()
+            else:
+                # Infer from text patterns if no audio
+                emotional_state = self._infer_emotion_from_text(conversation_text)
+
+            # 8. Infer content types
+            suggested_content = self.content_inferrer.infer_content_types(
+                conversation_text,
+                entity_ids,
+                locations,
+                time_refs,
+            )
+
+            # 9. Extract topics from entities and facts
+            topics = self._extract_topics(entities_found, related_facts, conversation_text)
+
+            # 10. Identify pending questions
+            questions = self._extract_questions(conversation_text)
+
+            # 11. Identify action items
+            actions = self._extract_actions(conversation_text)
+
+            # 12. Build intent from context
+            intent = self._build_intent(topics, actions, entity_ids)
+
+            # Build the gist
+            gist = ConversationGist(
+                topics=topics,
+                intent=intent,
+                entities_discussed=entity_ids,
+                locations_mentioned=locations,
+                time_references=time_refs,
+                emotional_tone=emotional_state,
+                suggested_content=suggested_content,
+                action_items=actions,
+                questions_pending=questions,
+            )
+
+            # Update room
+            room.update_gist(gist)
+
+            return gist
+
+    def _infer_emotion_from_text(self, text: str) -> EmotionalState:
+        """Infer emotion from text when audio is unavailable."""
+        text_lower = text.lower()
+
+        # Urgency indicators
+        if any(word in text_lower for word in ["urgent", "asap", "emergency", "now", "hurry", "quickly"]):
+            return EmotionalState.URGENT
+
+        # Confusion indicators
+        if any(word in text_lower for word in ["confused", "don't understand", "unclear", "what do you mean"]):
+            return EmotionalState.CONFUSED
+
+        # Count question marks as confusion indicator
+        if text.count("?") >= 3:
+            return EmotionalState.CONFUSED
+
+        # Frustration indicators
+        if any(word in text_lower for word in ["frustrated", "annoying", "problem", "issue", "not working", "broken"]):
+            return EmotionalState.FRUSTRATED
+
+        # Excitement indicators
+        if any(word in text_lower for word in ["excited", "great", "amazing", "wonderful", "awesome", "love"]):
+            return EmotionalState.EXCITED
+
+        # Exclamation marks as excitement indicator
+        if text.count("!") >= 2:
+            return EmotionalState.EXCITED
+
+        # Satisfaction indicators
+        if any(word in text_lower for word in ["thanks", "perfect", "good", "works", "solved", "done"]):
+            return EmotionalState.SATISFIED
+
+        # Curiosity indicators
+        if any(word in text_lower for word in ["wonder", "curious", "interesting", "tell me more", "how does"]):
+            return EmotionalState.CURIOUS
+
+        return EmotionalState.NEUTRAL
+
+    def _extract_topics(
+        self,
+        entities: List[Dict],
+        facts: List[Dict],
+        text: str,
+    ) -> List[str]:
+        """Extract topic keywords from entities and facts."""
+        topics = set()
+
+        # Add entity names as topics
+        for entity in entities:
+            if name := entity.get("name"):
+                topics.add(name.lower())
+
+        # Add key terms from facts
+        for fact in facts:
+            if fact_text := fact.get("fact"):
+                # Extract significant words
+                words = fact_text.split()
+                for word in words:
+                    word_clean = word.strip(".,!?").lower()
+                    if len(word_clean) > 4:
+                        topics.add(word_clean)
+
+        # Extract nouns from conversation (simple heuristic)
+        # Words that appear after "the", "a", "this" are likely topics
+        text_lower = text.lower()
+        for pattern in [r'the (\w+)', r'a (\w+)', r'this (\w+)', r'about (\w+)']:
+            matches = re.findall(pattern, text_lower)
+            for match in matches:
+                if len(match) > 3:
+                    topics.add(match)
+
+        return list(topics)[:10]  # Limit to top 10
+
+    def _extract_questions(self, text: str) -> List[str]:
+        """Extract unanswered questions from conversation."""
+        questions = []
+        lines = text.split("\n")
+
+        for line in lines:
+            if "?" in line:
+                # Extract just the question part
+                parts = line.split(":")
+                if len(parts) > 1:
+                    question = parts[1].strip()
+                else:
+                    question = line.strip()
+
+                if question.endswith("?"):
+                    questions.append(question)
+
+        return questions[-5:]  # Last 5 questions
+
+    def _extract_actions(self, text: str) -> List[str]:
+        """Extract action items from conversation."""
+        actions = []
+        text_lower = text.lower()
+
+        # Action indicator phrases
+        action_phrases = [
+            "need to", "should", "will", "going to", "let's",
+            "can you", "could you", "please", "make sure",
+        ]
+
+        lines = text.split("\n")
+        for line in lines:
+            line_lower = line.lower()
+            if any(phrase in line_lower for phrase in action_phrases):
+                # Extract the action
+                parts = line.split(":")
+                if len(parts) > 1:
+                    action = parts[1].strip()
+                else:
+                    action = line.strip()
+
+                if len(action) > 10:  # Filter very short lines
+                    actions.append(action)
+
+        return actions[-5:]  # Last 5 actions
+
+    def _build_intent(
+        self,
+        topics: List[str],
+        actions: List[str],
+        entities: List[str],
+    ) -> str:
+        """Build a one-sentence intent from context."""
+        if actions:
+            return actions[0]  # First action often captures intent
+
+        if topics:
+            if entities:
+                return f"Discussing {', '.join(topics[:2])} involving {entities[0]}"
+            return f"Discussing {', '.join(topics[:3])}"
+
+        return "General conversation"
+
+    async def should_update_canvas(
+        self,
+        room: ConversationRoom,
+        turns_since_update: int = 3,
+    ) -> bool:
         """
-        Determine if the canvas should be updated based on conversation flow.
-
-        Factors considered:
-        - Number of turns since last update
-        - Topic changes
-        - Entity mentions
-        - Emotional state changes
+        Determine if canvas should update.
+        Uses pattern matching, not LLM.
         """
         recent_turns = room.get_recent_turns(turns_since_update)
         if len(recent_turns) < turns_since_update:
             return False
 
-        # Check for topic keywords that suggest visual content
+        # Check for visual trigger keywords
         visual_triggers = [
             "show", "see", "look", "map", "where", "when", "schedule",
             "calendar", "photo", "picture", "graph", "chart", "data",
-            "route", "location", "place", "here", "there",
         ]
 
         for turn in recent_turns:
@@ -275,55 +828,14 @@ class GistAnalyzer:
             if any(trigger in content_lower for trigger in visual_triggers):
                 return True
 
-        # Check for entity mentions
-        for turn in recent_turns:
-            if turn.references_canvas:
-                return True
-
-        # Check emotional state changes
+        # Check emotional state
         if room.gist.emotional_tone in [
             EmotionalState.CONFUSED,
             EmotionalState.CURIOUS,
-            EmotionalState.EXCITED,
         ]:
             return True
 
         return False
-
-    def _format_participants(self, room: ConversationRoom) -> str:
-        """Format participants for prompt."""
-        lines = []
-        for p in room.get_active_participants():
-            ptype = p.participant_type.value.replace("_", " ").title()
-            if isinstance(p, HumanProxy):
-                lines.append(f"- {p.name} ({ptype}, role: {p.role})")
-            elif isinstance(p, EntityAgent):
-                lines.append(f"- {p.name} ({ptype}, kind: {p.entity_kind.value})")
-            else:
-                lines.append(f"- {p.name} ({ptype})")
-        return "\n".join(lines) if lines else "No participants"
-
-    def _format_entities(self, room: ConversationRoom) -> str:
-        """Format entity agents for prompt."""
-        lines = []
-        for entity in room.get_entity_agents():
-            lines.append(f"- {entity.id}: {entity.name} ({entity.entity_kind.value})")
-            if entity.location:
-                lines.append(f"  Location: {entity.location}")
-            if entity.entity_data:
-                lines.append(f"  Data: {json.dumps(entity.entity_data)}")
-        return "\n".join(lines) if lines else "No entities"
-
-    def _format_canvas(self, room: ConversationRoom) -> str:
-        """Format current canvas state for prompt."""
-        elements = room.get_canvas_state()
-        if not elements:
-            return "Canvas is empty"
-
-        lines = []
-        for el in elements:
-            lines.append(f"- {el['contentType']}: {el['content'].get('title', 'Untitled')}")
-        return "\n".join(lines)
 
 
 # =============================================================================
@@ -332,249 +844,204 @@ class GistAnalyzer:
 
 class ContentGenerator:
     """
-    Generates canvas content based on conversation gist and predictions.
+    Generates canvas content based on gist analysis.
+    Uses entity data and relationships, not LLM generation.
     """
 
     def __init__(self, agent: "Agent"):
         self.agent = agent
         self.analyzer = GistAnalyzer(agent)
 
-    async def generate_for_room(self, room: ConversationRoom) -> List[Dict]:
+    async def generate_for_room(
+        self,
+        room: ConversationRoom,
+        audio_features: Optional[AudioFeatures] = None,
+    ) -> List[Dict]:
         """
-        Generate appropriate canvas content for the current conversation.
-
-        Returns list of generated canvas elements.
+        Generate canvas content based on conversation analysis.
         """
-        # First analyze the conversation
-        gist = await self.analyzer.analyze(room)
-
-        # Get content predictions
-        predictions = await self.analyzer.predict_content(room)
+        # Analyze conversation
+        gist = await self.analyzer.analyze(room, audio_features)
 
         generated = []
-        for spec in predictions:
-            try:
-                element = await self._generate_element(room, spec)
-                if element:
-                    generated.append(element.to_dict())
-            except Exception as e:
-                PrintStyle.error(f"Failed to generate {spec.get('type')}: {e}")
+
+        # Generate for each suggested content type
+        for content_type in gist.suggested_content:
+            element = await self._generate_for_type(room, gist, content_type)
+            if element:
+                generated.append(element.to_dict())
+
+        # Always set ambient based on emotional tone
+        mood = self.analyzer.content_inferrer.infer_ambient_mood(gist.emotional_tone)
+        ambient = room.generate_ambient(
+            mood=mood,
+            imagery={"theme": gist.topics[0] if gist.topics else "nature"},
+            triggered_by="system",
+        )
+        generated.append(ambient.to_dict())
 
         return generated
 
-    async def _generate_element(self, room: ConversationRoom,
-                                spec: Dict) -> Optional[Any]:
-        """Generate a specific canvas element from specification."""
-        content_type = spec.get("type")
-        content_spec = spec.get("spec", {})
-        priority = spec.get("priority", 5)
+    async def _generate_for_type(
+        self,
+        room: ConversationRoom,
+        gist: ConversationGist,
+        content_type: CanvasContentType,
+    ):
+        """Generate specific content type."""
 
-        if content_type == "map":
-            return room.generate_map(
-                title=content_spec.get("title", "Map"),
-                locations=content_spec.get("locations", []),
-                center=content_spec.get("center"),
-                zoom=content_spec.get("zoom", 12),
-                routes=content_spec.get("routes", []),
-                priority=priority,
-            )
-
-        elif content_type == "calendar":
-            return room.generate_calendar(
-                title=content_spec.get("title", "Schedule"),
-                events=content_spec.get("events", []),
-                view=content_spec.get("view", "week"),
-                highlighted=content_spec.get("highlighted", []),
-                priority=priority,
-            )
-
-        elif content_type == "visualization":
-            return room.generate_visualization(
-                title=content_spec.get("title", "Data"),
-                data=content_spec.get("data", {}),
-                chart_type=content_spec.get("chartType", "bar"),
-                priority=priority,
-            )
-
-        elif content_type == "gallery":
-            return room.generate_gallery(
-                title=content_spec.get("title", "Gallery"),
-                images=content_spec.get("images", []),
-                layout=content_spec.get("layout", "grid"),
-                priority=priority,
-            )
-
-        elif content_type == "entity_view":
-            entity_id = content_spec.get("entityId")
-            entity = room.get_participant(entity_id)
-            if isinstance(entity, EntityAgent):
-                return room.generate_entity_view(
-                    entity=entity,
-                    priority=priority,
+        if content_type == CanvasContentType.MAP:
+            if gist.locations_mentioned:
+                return room.generate_map(
+                    title="Locations",
+                    locations=gist.locations_mentioned,
+                    triggered_by="gist_analysis",
                 )
 
-        elif content_type == "ambient":
-            return room.generate_ambient(
-                mood=content_spec.get("mood", "calm"),
-                imagery=content_spec.get("imagery", {}),
-                priority=0,
-            )
+        elif content_type == CanvasContentType.CALENDAR:
+            if gist.time_references:
+                # Build events from time references
+                events = [{"title": ref, "allDay": True} for ref in gist.time_references]
+                return room.generate_calendar(
+                    title="Schedule",
+                    events=events,
+                    triggered_by="gist_analysis",
+                )
+
+        elif content_type == CanvasContentType.ENTITY_VIEW:
+            # Show first discussed entity
+            if gist.entities_discussed:
+                entity_id = gist.entities_discussed[0]
+                entity = room.get_participant(entity_id)
+                if isinstance(entity, EntityAgent):
+                    return room.generate_entity_view(
+                        entity=entity,
+                        triggered_by="gist_analysis",
+                    )
+
+        elif content_type == CanvasContentType.VISUALIZATION:
+            # Generate basic visualization from action items or topics
+            if gist.action_items:
+                return room.generate_visualization(
+                    title="Action Items",
+                    data={
+                        "labels": [f"Item {i+1}" for i in range(len(gist.action_items))],
+                        "values": [1] * len(gist.action_items),
+                    },
+                    chart_type="bar",
+                    triggered_by="gist_analysis",
+                )
 
         return None
 
-    async def update_on_turn(self, room: ConversationRoom,
-                             turn: "ConversationTurn") -> bool:
+    async def update_on_turn(
+        self,
+        room: ConversationRoom,
+        turn: ConversationTurn,
+        audio_features: Optional[AudioFeatures] = None,
+    ) -> bool:
         """
-        Check if canvas should update after a turn and generate if needed.
-
-        Returns True if canvas was updated.
+        Check and update canvas after a turn.
         """
-        # Check if update is warranted
         should_update = await self.analyzer.should_update_canvas(room)
 
         if should_update:
-            generated = await self.generate_for_room(room)
+            generated = await self.generate_for_room(room, audio_features)
             return len(generated) > 0
 
         return False
 
 
 # =============================================================================
-# Emotional Context (Hume.ai Integration)
+# Emotional Context (Enhanced)
 # =============================================================================
 
 class EmotionalContext:
     """
-    Tracks emotional state from voice input (Hume.ai integration point).
-
-    This adapts agent responses and canvas content based on detected emotions.
+    Tracks emotional state with audio analysis integration.
     """
 
     def __init__(self):
-        self._current_state: Dict[str, EmotionalState] = {}  # participant_id -> state
-        self._emotional_history: List[Dict] = []
-        self._thresholds = {
-            "excitement": 0.7,
-            "frustration": 0.6,
-            "confusion": 0.5,
-            "stress": 0.6,
-            "satisfaction": 0.7,
-        }
+        self._states: Dict[str, EmotionalState] = {}
+        self._audio_features: Dict[str, AudioFeatures] = {}
+        self._history: List[Dict] = []
 
-    def update_emotional_state(self, participant_id: str,
-                               emotions: Dict[str, float]) -> EmotionalState:
-        """
-        Update emotional state for a participant based on Hume.ai metrics.
+    def update_from_audio(
+        self,
+        participant_id: str,
+        audio_features: AudioFeatures,
+    ) -> EmotionalState:
+        """Update emotional state from audio analysis."""
+        self._audio_features[participant_id] = audio_features
+        state, confidence = audio_features.infer_emotional_state()
+        self._states[participant_id] = state
 
-        Args:
-            participant_id: The participant whose emotion was detected
-            emotions: Dict of emotion -> confidence (0-1)
-
-        Returns:
-            The determined EmotionalState
-        """
-        # Map Hume emotions to our states
-        state = self._determine_state(emotions)
-        self._current_state[participant_id] = state
-
-        # Record history
-        self._emotional_history.append({
+        self._history.append({
             "participant_id": participant_id,
-            "emotions": emotions,
             "state": state.value,
-            "timestamp": asyncio.get_event_loop().time(),
+            "confidence": confidence,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-
-        # Keep only recent history
-        if len(self._emotional_history) > 100:
-            self._emotional_history = self._emotional_history[-100:]
 
         return state
 
-    def _determine_state(self, emotions: Dict[str, float]) -> EmotionalState:
-        """Determine overall emotional state from emotion scores."""
-        # Check thresholds in priority order
-        if emotions.get("excitement", 0) >= self._thresholds["excitement"]:
-            return EmotionalState.EXCITED
-        if emotions.get("frustration", 0) >= self._thresholds["frustration"]:
-            return EmotionalState.FRUSTRATED
-        if emotions.get("stress", 0) >= self._thresholds["stress"]:
-            return EmotionalState.STRESSED
-        if emotions.get("confusion", 0) >= self._thresholds["confusion"]:
-            return EmotionalState.CONFUSED
-        if emotions.get("curiosity", 0) >= 0.5:
-            return EmotionalState.CURIOUS
-        if emotions.get("satisfaction", 0) >= self._thresholds["satisfaction"]:
-            return EmotionalState.SATISFIED
-        if emotions.get("urgency", 0) >= 0.6:
-            return EmotionalState.URGENT
+    def update_from_hume(
+        self,
+        participant_id: str,
+        hume_response: Dict,
+    ) -> EmotionalState:
+        """Update from Hume.ai response."""
+        features = AudioFeatures.from_hume_response(hume_response)
+        return self.update_from_audio(participant_id, features)
 
-        return EmotionalState.NEUTRAL
+    def update_from_whisper(
+        self,
+        participant_id: str,
+        whisper_result: Dict,
+    ) -> EmotionalState:
+        """Update from Whisper transcription result."""
+        features = AudioFeatures.from_whisper_result(whisper_result)
+        return self.update_from_audio(participant_id, features)
 
     def get_state(self, participant_id: str) -> EmotionalState:
-        """Get current emotional state for a participant."""
-        return self._current_state.get(participant_id, EmotionalState.NEUTRAL)
+        return self._states.get(participant_id, EmotionalState.NEUTRAL)
 
     def get_adaptation_hints(self, participant_id: str) -> Dict[str, Any]:
-        """
-        Get hints for adapting responses based on emotional state.
-
-        Returns dict with:
-        - pace: speaking pace adjustment
-        - tone: tone adjustment
-        - detail_level: how much detail to provide
-        - reassurance: whether to add reassuring elements
-        """
+        """Get response adaptation hints based on emotional state."""
         state = self.get_state(participant_id)
 
         adaptations = {
             EmotionalState.NEUTRAL: {
-                "pace": "normal",
-                "tone": "balanced",
-                "detail_level": "moderate",
-                "reassurance": False,
+                "pace": "normal", "tone": "balanced",
+                "detail_level": "moderate", "reassurance": False,
             },
             EmotionalState.EXCITED: {
-                "pace": "energetic",
-                "tone": "enthusiastic",
-                "detail_level": "concise",
-                "reassurance": False,
+                "pace": "energetic", "tone": "enthusiastic",
+                "detail_level": "concise", "reassurance": False,
             },
             EmotionalState.STRESSED: {
-                "pace": "calm",
-                "tone": "reassuring",
-                "detail_level": "simple",
-                "reassurance": True,
+                "pace": "calm", "tone": "reassuring",
+                "detail_level": "simple", "reassurance": True,
             },
             EmotionalState.CONFUSED: {
-                "pace": "slow",
-                "tone": "patient",
-                "detail_level": "detailed",
-                "reassurance": True,
+                "pace": "slow", "tone": "patient",
+                "detail_level": "detailed", "reassurance": True,
             },
             EmotionalState.FRUSTRATED: {
-                "pace": "calm",
-                "tone": "empathetic",
-                "detail_level": "simple",
-                "reassurance": True,
+                "pace": "calm", "tone": "empathetic",
+                "detail_level": "simple", "reassurance": True,
             },
             EmotionalState.SATISFIED: {
-                "pace": "normal",
-                "tone": "warm",
-                "detail_level": "moderate",
-                "reassurance": False,
+                "pace": "normal", "tone": "warm",
+                "detail_level": "moderate", "reassurance": False,
             },
             EmotionalState.CURIOUS: {
-                "pace": "normal",
-                "tone": "engaging",
-                "detail_level": "detailed",
-                "reassurance": False,
+                "pace": "normal", "tone": "engaging",
+                "detail_level": "detailed", "reassurance": False,
             },
             EmotionalState.URGENT: {
-                "pace": "quick",
-                "tone": "focused",
-                "detail_level": "essential",
-                "reassurance": False,
+                "pace": "quick", "tone": "focused",
+                "detail_level": "essential", "reassurance": False,
             },
         }
 
@@ -587,95 +1054,90 @@ class EmotionalContext:
 
 class ContentPredictor:
     """
-    Predicts what content might be needed before it's explicitly requested.
-
-    Uses conversation patterns and entity relationships to anticipate needs.
+    Predicts content needs from conversation patterns and entity relationships.
     """
 
     def __init__(self, agent: "Agent"):
         self.agent = agent
-        self._prediction_cache: Dict[str, List[Dict]] = {}
+        self.graphiti = GraphitiAnalyzer()
 
-    async def predict_upcoming_needs(self, room: ConversationRoom) -> List[Dict]:
+    async def predict_upcoming_needs(
+        self,
+        room: ConversationRoom,
+    ) -> List[Dict]:
         """
-        Predict content that might be needed soon based on conversation flow.
-
-        Returns list of predicted content needs with confidence scores.
+        Predict what content might be needed based on:
+        - Entity relationships in graph
+        - Conversation patterns
+        - Historical interaction patterns
         """
-        gist = room.gist
-        participants = room.get_active_participants()
         predictions = []
+        gist = room.gist
 
-        # If discussing locations, predict map need
-        if gist.locations_mentioned:
+        # Get entity relationships
+        relationships = await self.graphiti.get_entity_relationships(
+            gist.entities_discussed,
+            room.id,
+        )
+
+        # If entities have location relationships, predict map need
+        for rel in relationships:
+            if rel.get("relationship") in ["LOCATED_AT", "NEAR", "CONNECTED_TO"]:
+                predictions.append({
+                    "type": "map",
+                    "confidence": 0.8,
+                    "reason": f"Entities have location relationships",
+                })
+                break
+
+        # If multiple entities with relationships, predict relationship view
+        if len(relationships) >= 3:
             predictions.append({
-                "type": "map",
-                "confidence": 0.8,
-                "reason": "Locations are being discussed",
-                "data": {"locations": gist.locations_mentioned},
+                "type": "relationship",
+                "confidence": 0.7,
+                "reason": "Multiple entity relationships to visualize",
             })
 
-        # If discussing times/scheduling, predict calendar need
-        if gist.time_references:
+        # If time references accumulating, predict calendar
+        if len(gist.time_references) >= 2:
             predictions.append({
                 "type": "calendar",
                 "confidence": 0.7,
-                "reason": "Times/dates are being mentioned",
-                "data": {"time_references": gist.time_references},
+                "reason": "Multiple time references mentioned",
             })
 
-        # If multiple entities involved, predict relationship view
-        entity_agents = room.get_entity_agents()
-        if len(entity_agents) >= 2 and "relationship" in gist.topics:
+        # If locations accumulating, predict map
+        if len(gist.locations_mentioned) >= 2:
             predictions.append({
-                "type": "relationship",
-                "confidence": 0.6,
-                "reason": "Multiple entities in conversation",
-                "data": {"entities": [e.id for e in entity_agents]},
+                "type": "map",
+                "confidence": 0.8,
+                "reason": "Multiple locations mentioned",
             })
 
-        # If discussing specific entity in depth
-        for entity_id in gist.entities_discussed:
-            entity = room.get_participant(entity_id)
-            if isinstance(entity, EntityAgent):
-                predictions.append({
-                    "type": "entity_view",
-                    "confidence": 0.7,
-                    "reason": f"{entity.name} is being discussed",
-                    "data": {"entity_id": entity_id},
-                })
-
-        # If action items accumulating, might want visualization
-        if len(gist.action_items) >= 3:
-            predictions.append({
-                "type": "visualization",
-                "confidence": 0.5,
-                "reason": "Multiple action items to track",
-                "data": {"action_items": gist.action_items},
-            })
-
-        # Cache and return
-        self._prediction_cache[room.id] = predictions
         return predictions
 
-    async def prefetch_content(self, room: ConversationRoom,
-                               generator: ContentGenerator) -> None:
+    async def prefetch_content(
+        self,
+        room: ConversationRoom,
+        generator: ContentGenerator,
+    ) -> None:
         """
-        Pre-generate predicted content for faster display when needed.
-
-        This runs in background to prepare content ahead of time.
+        Pre-generate predicted content for faster display.
         """
         predictions = await self.predict_upcoming_needs(room)
 
         for prediction in predictions:
             if prediction["confidence"] >= 0.7:
-                # High confidence - generate now
                 spec = {
                     "type": prediction["type"],
-                    "spec": prediction["data"],
+                    "spec": {},
                     "priority": int(prediction["confidence"] * 10),
                 }
                 try:
-                    await generator._generate_element(room, spec)
+                    await generator._generate_for_type(
+                        room,
+                        room.gist,
+                        CanvasContentType(prediction["type"])
+                    )
                 except Exception as e:
-                    PrintStyle.error(f"Prefetch failed for {prediction['type']}: {e}")
+                    PrintStyle.error(f"Prefetch failed: {e}")
