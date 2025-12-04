@@ -36,6 +36,17 @@ User ↔ A0 (primary agent)
 
 Each subordinate runs its own monologue, completes its task, and returns results to its superior. The context remains unified—all agents share the same graph database.
 
+### The A0 Framework
+
+The A0 Framework (`python/helpers/a0_framework.py`) integrates all components into a unified system. It initializes in dependency order:
+
+1. Ethics Engine (validates all actions)
+2. Collective Memory (records all I/O)
+3. Projects, Instruments, A2A, MCP, Prompts, Tools
+4. Agent Factory (lifecycle management)
+
+This singleton architecture ensures consistent state across all components.
+
 ---
 
 ## What Replaced What
@@ -68,6 +79,17 @@ Agents work through tools. The core toolkit includes:
 | `behaviour_adjustment` | Modify the agent's behavioral rules |
 
 Browser automation and MCP (Model Context Protocol) servers extend capabilities further.
+
+---
+
+## Code-in-Database
+
+Vessels can store and execute code directly from FalkorDB (`python/helpers/code_loader.py`):
+
+- **Code Loader**: Retrieves code from graph, compiles to Python modules, caches with hash validation
+- **Code Store**: Semantic indexing of code snippets with execution history tracking
+
+This enables agents to understand their own capabilities, write new tools at runtime, and maintain full audit trails of code evolution.
 
 ---
 
@@ -109,6 +131,80 @@ FalkorDB with Graphiti provides:
 - **Hybrid search**: Semantic + keyword + graph queries
 
 This replaces the fragmented storage of typical agent frameworks with a single coherent data model.
+
+---
+
+## Ethics Framework
+
+Vessels includes a Constitutional AI ethics engine (`python/helpers/ethics.py`) that validates agent actions against 18 principles organized into six categories:
+
+- **Safety**: Harm prevention, human oversight, fail-safe
+- **Transparency**: Honesty, explainability, auditability
+- **Privacy**: Data minimization, consent respect, confidentiality
+- **Fairness**: Non-discrimination, equal access, impartiality
+- **Accountability**: Responsibility, traceability, corrective action
+- **Autonomy**: Human agency, informed choice, reversibility
+
+Validators check actions before execution. Violations are classified by severity (info → critical) and can trigger warnings, modifications, or blocks.
+
+---
+
+## Moral Geometry
+
+The graph stores moral reasoning as points in a 15-dimensional ethical space. Each dimension represents a moral consideration (compassion, justice, truth, etc.).
+
+- **Moral vectors**: Individual ethical positions
+- **Moral trajectories**: How positions evolve across decisions
+- **Spectral decomposition**: Eigenvalue analysis of moral patterns
+
+This enables tracking how an agent's ethical reasoning develops over time.
+
+---
+
+## Entity Ontology
+
+Vessels represents more than humans and agents. The entity ontology supports:
+
+| Entity Type | Examples |
+|-------------|----------|
+| Human | Users, facilitators |
+| Agent | AI assistants |
+| Plant | Gardens, crops |
+| Machine | Devices, infrastructure |
+| System | Software, processes |
+| Biome | Ecosystems |
+| Community | Groups, organizations |
+
+Each entity has a **voice source**: self (speaks directly), proxy (another entity speaks for it), sensor (data represents it), or collective (multiple entities represent it).
+
+The **elicitation** process develops personas for entities that can't speak for themselves—discovering their boundaries, rhythms, and needs through facilitated sessions.
+
+---
+
+## Kala: Contribution Visibility
+
+Kala tracks contributions that don't fit traditional economic categories. Events record:
+
+- Participants and hours
+- Roles and activities
+- Community context
+
+Two views exist:
+- **Human View**: Your own contribution history
+- **Agent View**: Aggregated patterns for coordination, including burnout detection and withdrawal signals
+
+Integrates with TigerBeetle for formal accounting when needed.
+
+---
+
+## Hume.ai Integration
+
+Voice interactions use Hume's Empathic Voice Interface for emotional intelligence:
+
+- **Emotion detection**: Real-time inference from vocal characteristics
+- **Voice profiles**: Persona voice settings stored in graph
+- **Emotional trajectories**: Historical emotional state tracking
+- **Vessel-level climate**: Aggregate emotional state across active sessions
 
 ---
 
