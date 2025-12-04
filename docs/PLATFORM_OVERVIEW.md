@@ -10,6 +10,8 @@ The landscape of artificial intelligence has evolved dramatically in recent year
 
 Vessels emerges as a response to these limitations, offering a fundamentally different approach to building autonomous AI agents. Rather than treating storage as an afterthought to be solved with whichever database happens to be convenient, Vessels places a unified temporal knowledge graph at the very center of its architecture. Every piece of information the agent encounters, remembers, or generates flows through this central graph, creating a web of interconnected knowledge that mirrors the way intelligent systems naturally organize and retrieve information.
 
+The platform has evolved significantly to embrace what we call the A0 Framework: a comprehensive integration architecture that unifies ethics, memory, code execution, and multi-agent coordination into a coherent whole. This framework treats the agent not merely as a language model wrapper but as a self-aware, ethically-grounded system capable of loading and executing its own code from the graph database, tracking contributions through the Kala visibility system, and expressing itself through emotionally intelligent voice interfaces powered by Hume.ai.
+
 This paper provides a comprehensive exploration of the Vessels platform from the perspective of someone seeking to understand, deploy, and utilize it. We will examine what the platform can accomplish, delve into the technical mechanisms that enable its capabilities, and consider the contexts in which it proves most valuable. Rather than presenting a dry technical specification, this overview aims to convey the conceptual foundations and practical implications of a graph-native approach to autonomous agents.
 
 ---
@@ -37,6 +39,32 @@ This graph structure proves particularly well-suited to the kinds of information
 Consider a simple example. A user might ask an agent about recommendations for restaurants in a city they discussed visiting several weeks ago. In a traditional architecture, the agent would need to search its vector database for memories related to restaurants, separately query its conversation history for mentions of the city, and somehow combine these results to formulate a response. With Vessels, this information naturally clusters in the graph. The city exists as an entity node connected to the conversation messages where it was discussed, the memories formed about travel planning, and potentially knowledge documents about the region. Retrieving relevant context becomes a matter of traversing these connections rather than executing independent searches and hoping the language model can synthesize the results.
 
 The temporal dimension adds further richness to this model. Every node and edge in the Vessels graph carries temporal metadata indicating when it was created, when it was last accessed, and how it has evolved over time. Graphiti, the temporal knowledge graph library that Vessels integrates, provides sophisticated mechanisms for tracking how entities and relationships change. A fact learned early in a conversation might be refined or contradicted by later information. A relationship between entities might strengthen with repeated confirmation or weaken as circumstances change. Vessels captures this temporal evolution, enabling agents to reason about not just what they know but when they learned it and how confident they should be in that knowledge.
+
+---
+
+## The A0 Framework: Central Integration Architecture
+
+At the heart of Vessels lies the A0 Framework, a central integration module that orchestrates all system components into a cohesive whole. Rather than treating various capabilities as independent modules that happen to coexist, A0 provides a unified architecture where ethics, memory, code execution, agent communication, and tool management work together as an integrated system.
+
+The framework follows a carefully designed initialization sequence that respects component dependencies. The Ethics Engine initializes first, ensuring that ethical validation is in place before any other component begins operation. Collective Memory follows, providing the recording infrastructure that captures all system I/O for audit and learning. Projects, Instruments, Agent-to-Agent communication, Model Context Protocol integration, Prompts, Tools, and finally the Agent Factory initialize in sequence, each building on the foundations laid by earlier components.
+
+This singleton architecture ensures that all parts of the system share a consistent view of state and configuration. When an agent needs to validate an action against ethical principles, it accesses the same Ethics Engine instance that recorded previous validations. When a tool needs to store results in memory, it writes to the same Collective Memory that other components can query. This consistency eliminates the synchronization challenges that plague systems built from loosely coupled components.
+
+The A0 Framework exposes its components through a clean interface that makes the full power of the integrated system available to agent code. Developers can access the ethics engine to validate custom actions, the memory system to record domain-specific information, the project manager to organize complex multi-step tasks, and the instrument registry to invoke external tools. This accessibility transforms the framework from a black box into a programmable platform that can be extended and customized for specific use cases.
+
+---
+
+## Constitutional AI: The Ethics Engine
+
+Vessels implements a comprehensive ethical framework that validates all agent actions against a constitutional set of principles. This is not merely a content filter applied to outputs but a deep integration that subjects every action, input, and output to ethical scrutiny before execution.
+
+The Ethics Engine organizes its principles into six foundational categories. Safety principles encompass harm prevention, human oversight, and fail-safe mechanisms. Transparency principles ensure honesty, explainability, and auditability in all agent operations. Privacy principles enforce data minimization, consent respect, and confidentiality. Fairness principles mandate non-discrimination, equal access, and impartiality. Accountability principles require responsibility, traceability, and corrective action. Autonomy principles protect human agency, informed choice, and reversibility of agent actions.
+
+Each category contains specialized validators that examine actions for potential violations. The Harm Prevention Validator detects patterns associated with harmful content and targeted harm attempts. The Privacy Validator identifies personally identifiable information and unauthorized data storage. The Transparency Validator checks for deceptive patterns and ensures appropriate audit trails. The Accountability Validator enforces proper attribution and reversibility of actions. The Human Oversight Validator ensures that critical actions receive appropriate human approval.
+
+When a potential ethical violation is detected, the system classifies its severity from informational notices through low, medium, high, and critical levels. The response can range from logging a warning to modifying the proposed action to blocking it entirely. All ethical decisions are recorded in collective memory, creating an audit trail that enables both immediate accountability and long-term analysis of agent behavior patterns.
+
+The constitutional approach means that ethical principles are not hard-coded rules but a living document that can evolve as understanding deepens. The constitution itself defines immutable core rules while allowing for interpretation and refinement in their application. This balance between stability and adaptability reflects the recognition that ethical reasoning requires both firm foundations and contextual sensitivity.
 
 ---
 
@@ -152,6 +180,20 @@ Beyond these built-in tools, Vessels supports the Model Context Protocol for int
 
 ---
 
+## The Code-in-Database Paradigm
+
+One of the most innovative aspects of Vessels is its treatment of code as first-class data within the knowledge graph. Rather than loading Python modules from the filesystem in the traditional manner, Vessels can store, retrieve, and execute code directly from FalkorDB. This Code-in-Database paradigm enables capabilities that would be impossible with conventional file-based code organization.
+
+The Code Loader component provides the infrastructure for this capability. All code, including tools, extensions, helpers, APIs, instruments, and scripts, can be stored as nodes in the graph with full metadata about their purpose, dependencies, and version history. When code is needed, the loader retrieves it from the database, compiles it into a Python module, and caches it for performance. Hash-based validation ensures that cached code remains consistent with database content.
+
+This architecture enables several powerful patterns. First, it makes the agent genuinely self-aware of its own capabilities. An agent can query the graph to understand what tools are available, read their implementations, and reason about how to apply them. Second, it enables self-modification: agents can write new code to the database, extending their capabilities at runtime without human intervention. Third, it provides complete auditability, with every version of every piece of code preserved in the graph with full temporal metadata.
+
+The Code Store complements the Code Loader by providing semantic indexing of code snippets. Code can be tagged, described, and searched using the same hybrid search capabilities that apply to other graph content. When an agent encounters a task similar to one it has solved before, it can search for relevant code snippets and adapt them to the current situation. Execution history tracks which code has been run, with timing and success metrics that inform future code selection.
+
+This approach transforms the traditional relationship between agents and their code. Rather than being constrained to use whatever tools developers provide, agents can discover, understand, create, and evolve their own capabilities. The graph database ensures that this flexibility comes with full visibility and control rather than opaque self-modification.
+
+---
+
 ## The Web Interface and User Experience
 
 While Vessels can operate as a pure command-line or API-driven system, it also provides a web interface that offers a more accessible user experience. This interface, built with Flask and streaming capabilities, presents agent interactions through a chat-like interface familiar to users of conversational AI applications.
@@ -201,6 +243,62 @@ Automation and workflow orchestration take advantage of the tool capabilities an
 Educational applications use the conversational interface and memory capabilities to create personalized learning experiences. An agent can track what a student has learned, identify areas needing reinforcement, and adapt explanations to the student's demonstrated level of understanding. The episodic memory structure supports long-term educational relationships where context accumulates over many interactions.
 
 Security assessment, through the Security Specialist profile, provides intelligent assistance for authorized penetration testing and defensive security work. Security professionals can engage with an agent that understands attack techniques, helps identify vulnerabilities, and assists with remediation planning. The comprehensive guardian system ensures that the agent's security capabilities remain within authorized bounds.
+
+---
+
+## Universal Entity Ontology
+
+Vessels introduces a universal ontology system that enables representation of any entity type within the knowledge graph. While traditional agent frameworks focus exclusively on human users and AI agents, the Entity Ontology recognizes that meaningful relationships extend to plants, machines, systems, biomes, and communities. This expanded scope enables applications that would be impossible with a human-centric model.
+
+Each entity in the ontology is characterized by its type and voice source. The entity type indicates what kind of being is represented: human, agent, plant, machine, system, biome, or community. The voice source indicates how the entity expresses itself in the system: through self-expression (speaking for itself), through a proxy (another entity speaking on its behalf), through sensors (data streams representing its state), or through a collective (multiple entities representing it together).
+
+The elicitation process provides a structured approach to developing personas for entities that cannot speak for themselves. When a garden, a machine, or a biome joins the system, human facilitators work through elicitation sessions to understand the entity's character, boundaries, rhythms, and needs. These sessions are tracked in the graph, with progress indicators showing how complete the persona development has become.
+
+Spokespersons are entities authorized to speak on behalf of another entity. A human might serve as spokesperson for a garden, translating sensor data and observations into the garden's voice. Sensor sources provide data streams that represent entity state, such as soil moisture sensors for a plant or performance metrics for a machine. Stories capture the defining narratives that characterize an entity, while boundaries define its limits and interaction edges, and cycles describe its natural rhythms and patterns.
+
+This ontology enables Vessels to serve as infrastructure for what might be called more-than-human communities, where people, agents, gardens, and machines participate together in shared activities. The graph naturally captures the relationships between these diverse entities, enabling queries that span across entity types.
+
+---
+
+## Emotional Intelligence: Hume.ai Integration
+
+Vessels integrates Hume.ai's Empathic Voice Interface (EVI) to bring emotional intelligence to agent interactions. This integration transforms voice from a simple input/output modality into a rich channel for emotional understanding and expression.
+
+Voice profiles stored in the graph capture the characteristics and preferences associated with each persona's voice. Voice sessions track individual interactions with full emotional context, including the emotional state detected during the conversation and how it evolved. The system can aggregate emotional states across active sessions to understand the emotional climate of an entire vessel or community.
+
+Emotion detection operates in real-time during voice interactions, inferring emotional state from vocal characteristics. The detected emotions are stored with confidence scores and associated with the conversation context, enabling the agent to respond appropriately to the user's emotional state. Historical emotional data is preserved, allowing analysis of emotional trajectories over time.
+
+The Gist Analyzer component extracts emotional features from audio using Hume's prediction API. Beyond simple emotion labels, it captures dominance, valence, and arousal metrics that provide a richer picture of emotional state. These features inform both immediate response adaptation and long-term understanding of user preferences and patterns.
+
+This emotional awareness extends beyond individual interactions to community-level understanding. When multiple personas are active in a vessel, the system can assess the overall emotional climate, identifying dominant emotions, average affective measures, and patterns that might indicate community-level dynamics requiring attention.
+
+---
+
+## Contribution Visibility: The Kala System
+
+Traditional economic systems struggle to recognize and reward contributions that do not fit neatly into market transactions. Volunteers, community organizers, caregivers, and others who create value through non-market activities often find their contributions invisible to formal accounting systems. Vessels addresses this through the Kala system, a non-currency contribution tracking mechanism designed to make all meaningful contributions visible.
+
+Kala events record community activities with full participant information, including hours contributed, roles played, and any recognition or rewards associated with the contribution. Each event is stored in the knowledge graph with relationships to the participants, the community, and any related projects or goals.
+
+The system provides two distinct views of contribution data. The Human View presents an individual's own contribution history in a format suitable for personal reflection and verification. Participants can see their own events, hours, and patterns without accessing information about others. The Agent View provides the coordination perspective needed for community facilitation, with aggregated metrics and pattern analysis that respects individual privacy.
+
+The Agent View incorporates specialized detection for community health metrics. Burnout detection identifies participants whose recent hours exceed sustainable levels, enabling proactive intervention before exhaustion sets in. Withdrawal detection notices sudden drops in participation that might indicate disengagement, allowing community facilitators to reach out. Care network analysis maps co-participation patterns and identifies isolated participants who might benefit from stronger community connections.
+
+While Kala itself is a visibility system rather than a currency, it integrates with TigerBeetle for applications that require formal accounting. This enables scenarios where contribution visibility informs but does not replace traditional economic recognition.
+
+---
+
+## Moral Geometry: Navigating Ethical Space
+
+Beyond the rule-based ethics of the Constitutional AI framework, Vessels provides a geometric approach to understanding moral reasoning. Moral Geometry represents ethical decisions as points in a fifteen-dimensional space, where each dimension corresponds to a different ethical consideration. This representation enables sophisticated analysis of ethical trajectories and relationships that would be difficult to capture in categorical terms.
+
+Moral vectors represent specific ethical positions or decision points within this space. When an agent makes an ethically significant decision, the choice can be encoded as a vector capturing how it weighs different ethical considerations. These vectors are stored in the graph with full temporal metadata, creating a record of the agent's moral reasoning over time.
+
+Moral trajectories track paths through ethical space, representing how ethical positions evolve across a series of decisions. Rather than treating each decision in isolation, trajectories reveal patterns in moral reasoning: tendencies toward certain trade-offs, evolution in ethical priorities, or responses to different types of dilemmas. Waypoints along the trajectory capture the specific moments where direction changed.
+
+Spectral decomposition applies mathematical analysis to moral vectors, extracting eigenvalues and eigenvectors that reveal the underlying structure of ethical reasoning. This harmonic analysis can identify stable ethical orientations, sources of moral tension, and patterns that might not be visible from examining individual decisions.
+
+Moral distance metrics quantify the ethical difference between positions, enabling queries like "how far has this agent's ethical reasoning moved?" or "how different are these two agents' approaches to this type of dilemma?" Combined with semantic search capabilities, this enables sophisticated analysis of moral reasoning across agents and time.
 
 ---
 
@@ -268,13 +366,15 @@ Custom configuration proceeds through the settings interface, where users can ad
 
 ## The Future of Graph-Native Agents
 
-Vessels represents an early step in what may become a broader movement toward graph-native architectures for AI systems. As language models become more capable and their applications more complex, the limitations of fragmented storage approaches become more apparent. The need for systems that can maintain coherent context over extended interactions, reason about relationships between entities, and provide unified security boundaries will only grow.
+Vessels represents an early step in what may become a broader movement toward graph-native, ethically-grounded architectures for AI systems. As language models become more capable and their applications more complex, the limitations of fragmented storage approaches become more apparent. The need for systems that can maintain coherent context over extended interactions, reason about relationships between entities, validate actions against ethical principles, and provide unified security boundaries will only grow.
 
-The temporal dimension that Vessels emphasizes through Graphiti integration points toward agents that can reason about their own history and the evolution of their understanding. Current language models have limited awareness of time, treating each interaction as isolated unless explicitly provided with historical context. Graph architectures with temporal metadata offer a path toward more sophisticated temporal reasoning.
+The temporal dimension that Vessels emphasizes through Graphiti integration points toward agents that can reason about their own history and the evolution of their understanding. The Moral Geometry framework extends this temporal awareness to ethical reasoning, enabling analysis of how moral positions evolve over time. Current language models have limited awareness of time, treating each interaction as isolated unless explicitly provided with historical context. Graph architectures with temporal metadata offer a path toward more sophisticated temporal and ethical reasoning.
 
-Multi-agent collaboration benefits particularly from graph-based knowledge sharing. When multiple agents can read from and write to a shared knowledge graph, they can build collective understanding that exceeds what any individual agent could develop. This points toward applications where agent teams collaborate on complex projects over extended timeframes.
+Multi-agent collaboration benefits particularly from graph-based knowledge sharing. When multiple agents can read from and write to a shared knowledge graph, they can build collective understanding that exceeds what any individual agent could develop. The Code-in-Database paradigm takes this further, allowing agents to share and evolve capabilities, not just knowledge. This points toward applications where agent teams collaborate on complex projects over extended timeframes, developing shared tools and procedures as they work.
 
-The integration of financial ledger capabilities through TigerBeetle hints at applications where agents handle transactions, track resource allocation, and maintain accounting integrity. As autonomous agents take on more responsibility in organizational processes, the need for auditable, consistent financial tracking will increase.
+The Universal Entity Ontology opens possibilities for systems that extend beyond human-AI interaction to encompass gardens, machines, ecosystems, and communities. As computing becomes more embedded in physical environments and as concerns about ecological systems grow, the ability to represent and reason about more-than-human entities becomes increasingly relevant.
+
+The integration of financial ledger capabilities through TigerBeetle, combined with the Kala contribution visibility system, hints at applications where agents help coordinate complex community economies that recognize diverse forms of value. As autonomous agents take on more responsibility in organizational processes, the need for auditable, consistent tracking of both financial and non-financial contributions will increase.
 
 ---
 
@@ -282,8 +382,10 @@ The integration of financial ledger capabilities through TigerBeetle hints at ap
 
 Vessels offers a fundamentally different approach to building autonomous AI agents, placing a unified temporal knowledge graph at the center of the architecture rather than treating storage as a collection of independent systems to be assembled ad-hoc. This design choice has pervasive implications, enabling richer memory retrieval, more coherent conversation handling, better knowledge integration, and more comprehensive security.
 
-The platform proves most valuable for applications that benefit from context continuity, relationship awareness, and sophisticated retrieval patterns. Software development, research and analysis, enterprise knowledge management, and security assessment all leverage these capabilities to produce outcomes that would be difficult to achieve with traditional frameworks.
+The platform has evolved beyond its original vision to embrace a fully integrated A0 Framework that treats ethics, memory, code, and multi-agent coordination as aspects of a single coherent system. Constitutional AI principles ensure that all agent actions are validated against clearly defined ethical standards. The Code-in-Database paradigm enables agents to understand, modify, and extend their own capabilities. Universal Entity Ontology opens the system to more-than-human participants, from gardens to machines to biomes. Emotional intelligence through Hume.ai integration brings genuine affective awareness to voice interactions. The Kala system makes all contributions visible, not just those that fit traditional economic categories. And Moral Geometry provides a sophisticated framework for understanding and analyzing ethical reasoning over time.
 
-The trade-offs involved, including additional complexity in the data model, costs for entity extraction and embedding, and the learning curve for graph database concepts, deserve consideration in evaluating whether Vessels fits a particular use case. For applications where simple memory suffices and relationships do not matter, simpler approaches may be preferable. For applications that will grow to involve complex webs of interconnected knowledge, the investment in a graph-native architecture pays dividends over time.
+The platform proves most valuable for applications that benefit from context continuity, relationship awareness, ethical grounding, and sophisticated retrieval patterns. Software development, research and analysis, enterprise knowledge management, community coordination, and security assessment all leverage these capabilities to produce outcomes that would be difficult to achieve with traditional frameworks. The addition of more-than-human entity support enables entirely new categories of applications involving gardens, ecosystems, machines, and hybrid communities.
 
-Vessels emerges at a moment when the capabilities of language models have outpaced the infrastructure traditionally used to support them. By providing architecture designed from the ground up for the needs of autonomous agents, it enables applications that exploit the full potential of modern AI systems. For developers and organizations seeking to build sophisticated agent applications that maintain context, respect relationships, and operate securely, Vessels offers a foundation worthy of serious consideration.
+The trade-offs involved, including additional complexity in the data model, costs for entity extraction and embedding, and the learning curve for graph database concepts, deserve consideration in evaluating whether Vessels fits a particular use case. For applications where simple memory suffices and relationships do not matter, simpler approaches may be preferable. For applications that will grow to involve complex webs of interconnected knowledge, ethical considerations, emotional awareness, and diverse entity types, the investment in the A0 Framework pays dividends over time.
+
+Vessels emerges at a moment when the capabilities of language models have outpaced the infrastructure traditionally used to support them. By providing architecture designed from the ground up for the needs of autonomous agents, it enables applications that exploit the full potential of modern AI systems. More than that, it provides a foundation for thinking about what agents should be: not merely capable but ethically grounded, not merely responsive but emotionally aware, not merely focused on human users but open to the full diversity of entities that might participate in meaningful relationships. For developers and organizations seeking to build sophisticated agent applications that maintain context, respect relationships, operate ethically, and extend beyond traditional boundaries, Vessels offers a foundation worthy of serious consideration.
