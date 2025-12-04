@@ -1,391 +1,181 @@
 # Vessels: A Graph-Native Framework for Autonomous Agents
 
-## A Comprehensive Platform Overview
+## Overview
+
+Vessels is an autonomous agent framework built on [Agent Zero](https://github.com/agent0ai/agent-zero), extended with a unified graph-based storage layer using FalkorDB and Graphiti. The framework replaces traditional file-based storage and FAISS vector databases with a temporal knowledge graph that stores all agent state—memories, conversations, knowledge, and settings—in a single connected structure.
 
 ---
 
-## Introduction
+## The Core Experience: Self-Orchestrating Agents
 
-The landscape of artificial intelligence has evolved dramatically in recent years, with large language models becoming increasingly capable of complex reasoning, code generation, and multi-step task execution. Yet as these models have grown more powerful, the infrastructure surrounding them has often remained surprisingly primitive. Most agent frameworks still rely on fragmented storage systems, separating memories into vector databases, conversations into JSON files, and knowledge into scattered markdown documents. This architectural fragmentation creates synchronization challenges, retrieval inefficiencies, and a fundamental disconnect between related pieces of information that should naturally exist in relationship with one another.
+When you interact with Vessels, you're not giving commands to a passive assistant. You're initiating a conversation with an agent that orchestrates its own work.
 
-Vessels emerges as a response to these limitations, offering a fundamentally different approach to building autonomous AI agents. Rather than treating storage as an afterthought to be solved with whichever database happens to be convenient, Vessels places a unified temporal knowledge graph at the very center of its architecture. Every piece of information the agent encounters, remembers, or generates flows through this central graph, creating a web of interconnected knowledge that mirrors the way intelligent systems naturally organize and retrieve information.
+### The Monologue
 
-The platform has evolved significantly to embrace what we call the A0 Framework: a comprehensive integration architecture that unifies ethics, memory, code execution, and multi-agent coordination into a coherent whole. This framework treats the agent not merely as a language model wrapper but as a self-aware, ethically-grounded system capable of loading and executing its own code from the graph database, tracking contributions through the Kala visibility system, and expressing itself through emotionally intelligent voice interfaces powered by Hume.ai.
+Every agent runs a **monologue**—a continuous loop where the agent reasons about what to do next, takes action through tools, observes results, and decides whether to continue or respond. This loop continues until the agent determines it has completed the task or needs user input.
 
-This paper provides a comprehensive exploration of the Vessels platform from the perspective of someone seeking to understand, deploy, and utilize it. We will examine what the platform can accomplish, delve into the technical mechanisms that enable its capabilities, and consider the contexts in which it proves most valuable. Rather than presenting a dry technical specification, this overview aims to convey the conceptual foundations and practical implications of a graph-native approach to autonomous agents.
+```
+User message → Agent reasoning → Tool use → Observe results → Continue or respond
+                    ↑                              ↓
+                    └──────────────────────────────┘
+```
 
----
+The agent isn't following a script. It decides which tools to use, when to delegate to subordinate agents, and when the task is complete. This is what "self-orchestrating" means: the agent manages its own workflow.
 
-## The Problem with Fragmented Agent Architectures
+### Agent Hierarchy
 
-Before examining what Vessels offers, it helps to understand the challenges that motivated its creation. Traditional autonomous agent frameworks, even sophisticated ones, typically construct their memory and knowledge systems by assembling separate components that were never designed to work together. A typical agent might store its long-term memories in a FAISS or Chroma vector database, enabling semantic search over embedded text chunks. Conversation histories get serialized to JSON files on the local filesystem. Knowledge documents are parsed and stored in yet another location, perhaps as raw text or in a separate document store. Configuration and settings live in environment variables or YAML files.
+Agents can spawn subordinate agents to handle subtasks. Agent 0 (A0) is the primary agent that receives user messages. When A0 calls the `call_subordinate` tool, it creates A1 with a specific task. A1 can further spawn A2, and so on.
 
-This approach works reasonably well for simple applications, but it creates fundamental problems as systems grow more complex. When memories, conversations, and knowledge exist in isolated silos, the agent cannot easily reason about the relationships between them. If a user asks about a topic that was discussed three conversations ago and relates to a document in the knowledge base and connects to a memory the agent formed during that earlier interaction, the agent must execute separate queries against each system, retrieve disparate results, and somehow synthesize them into a coherent understanding. The burden of integration falls on the language model itself, which must piece together context from fragments that have no structural relationship to one another.
+```
+User ↔ A0 (primary agent)
+         ↓ delegates
+        A1 (subordinate)
+         ↓ delegates
+        A2 (subordinate)
+```
 
-Temporal awareness presents an even more significant challenge. When memories are simply embedded vectors in a database, they carry no inherent sense of when they were formed, how they have evolved over time, or how they relate to the sequence of experiences that produced them. An agent might remember a fact without knowing whether it learned that fact yesterday or a year ago, whether it has been confirmed multiple times or mentioned only once in passing, whether more recent information has superseded it or it remains current. This lack of temporal grounding impairs the kind of nuanced reasoning that intelligent behavior requires.
-
-The security implications of fragmented architectures also deserve consideration. When agent inputs flow through multiple systems with different validation approaches, maintaining consistent security guarantees becomes difficult. A prompt injection attack might be caught by one component but slip through another. Data exfiltration attempts might be blocked in the main conversation loop but succeed through a side channel in the memory system. The lack of a unified security boundary creates vulnerabilities that are difficult to identify and address.
-
-Vessels addresses these challenges by unifying all agent state within a single temporal knowledge graph. Rather than treating storage as a collection of independent systems, it provides a coherent data model where memories, conversations, knowledge, and settings exist as interconnected entities with explicit relationships and temporal metadata. This architectural choice has profound implications for how agents can reason, remember, and operate.
-
----
-
-## The Foundation: Temporal Knowledge Graphs
-
-At the heart of Vessels lies FalkorDB, a high-performance graph database that provides the storage substrate for all agent data. Unlike traditional relational databases that organize information into tables of rows and columns, or document databases that store self-contained JSON objects, graph databases model information as networks of nodes and edges. Each node represents an entity, whether that be a memory, a message in a conversation, a document in the knowledge base, or a configuration setting. Edges represent relationships between these entities, capturing how they connect, influence, and relate to one another.
-
-This graph structure proves particularly well-suited to the kinds of information that autonomous agents work with. Conversations are naturally sequential, with each message relating to those that came before. Memories often concern entities, whether people, places, organizations, or concepts, that appear across multiple contexts and time periods. Knowledge documents reference topics that connect to agent experiences and user queries. By representing all of this information in a unified graph, Vessels enables queries that would be impossible or impractical in a fragmented architecture.
-
-Consider a simple example. A user might ask an agent about recommendations for restaurants in a city they discussed visiting several weeks ago. In a traditional architecture, the agent would need to search its vector database for memories related to restaurants, separately query its conversation history for mentions of the city, and somehow combine these results to formulate a response. With Vessels, this information naturally clusters in the graph. The city exists as an entity node connected to the conversation messages where it was discussed, the memories formed about travel planning, and potentially knowledge documents about the region. Retrieving relevant context becomes a matter of traversing these connections rather than executing independent searches and hoping the language model can synthesize the results.
-
-The temporal dimension adds further richness to this model. Every node and edge in the Vessels graph carries temporal metadata indicating when it was created, when it was last accessed, and how it has evolved over time. Graphiti, the temporal knowledge graph library that Vessels integrates, provides sophisticated mechanisms for tracking how entities and relationships change. A fact learned early in a conversation might be refined or contradicted by later information. A relationship between entities might strengthen with repeated confirmation or weaken as circumstances change. Vessels captures this temporal evolution, enabling agents to reason about not just what they know but when they learned it and how confident they should be in that knowledge.
+Each subordinate runs its own monologue, completes its task, and returns results to its superior. The context remains unified—all agents share the same graph database.
 
 ---
 
-## The A0 Framework: Central Integration Architecture
+## What Replaced What
 
-At the heart of Vessels lies the A0 Framework, a central integration module that orchestrates all system components into a cohesive whole. Rather than treating various capabilities as independent modules that happen to coexist, A0 provides a unified architecture where ethics, memory, code execution, agent communication, and tool management work together as an integrated system.
+Vessels made a specific architectural decision: **everything goes in the graph**.
 
-The framework follows a carefully designed initialization sequence that respects component dependencies. The Ethics Engine initializes first, ensuring that ethical validation is in place before any other component begins operation. Collective Memory follows, providing the recording infrastructure that captures all system I/O for audit and learning. Projects, Instruments, Agent-to-Agent communication, Model Context Protocol integration, Prompts, Tools, and finally the Agent Factory initialize in sequence, each building on the foundations laid by earlier components.
+| Traditional Approach | Vessels |
+|---------------------|---------|
+| FAISS vector database | Graphiti hybrid search (semantic + BM25 + graph traversal) |
+| JSON files for chat history | Chat episodes in FalkorDB |
+| Markdown files for memories | Memory nodes with entity relationships |
+| File-based settings | Settings stored as graph properties |
+| Scattered knowledge docs | Knowledge imported as connected graph nodes |
 
-This singleton architecture ensures that all parts of the system share a consistent view of state and configuration. When an agent needs to validate an action against ethical principles, it accesses the same Ethics Engine instance that recorded previous validations. When a tool needs to store results in memory, it writes to the same Collective Memory that other components can query. This consistency eliminates the synchronization challenges that plague systems built from loosely coupled components.
-
-The A0 Framework exposes its components through a clean interface that makes the full power of the integrated system available to agent code. Developers can access the ethics engine to validate custom actions, the memory system to record domain-specific information, the project manager to organize complex multi-step tasks, and the instrument registry to invoke external tools. This accessibility transforms the framework from a black box into a programmable platform that can be extended and customized for specific use cases.
-
----
-
-## Constitutional AI: The Ethics Engine
-
-Vessels implements a comprehensive ethical framework that validates all agent actions against a constitutional set of principles. This is not merely a content filter applied to outputs but a deep integration that subjects every action, input, and output to ethical scrutiny before execution.
-
-The Ethics Engine organizes its principles into six foundational categories. Safety principles encompass harm prevention, human oversight, and fail-safe mechanisms. Transparency principles ensure honesty, explainability, and auditability in all agent operations. Privacy principles enforce data minimization, consent respect, and confidentiality. Fairness principles mandate non-discrimination, equal access, and impartiality. Accountability principles require responsibility, traceability, and corrective action. Autonomy principles protect human agency, informed choice, and reversibility of agent actions.
-
-Each category contains specialized validators that examine actions for potential violations. The Harm Prevention Validator detects patterns associated with harmful content and targeted harm attempts. The Privacy Validator identifies personally identifiable information and unauthorized data storage. The Transparency Validator checks for deceptive patterns and ensures appropriate audit trails. The Accountability Validator enforces proper attribution and reversibility of actions. The Human Oversight Validator ensures that critical actions receive appropriate human approval.
-
-When a potential ethical violation is detected, the system classifies its severity from informational notices through low, medium, high, and critical levels. The response can range from logging a warning to modifying the proposed action to blocking it entirely. All ethical decisions are recorded in collective memory, creating an audit trail that enables both immediate accountability and long-term analysis of agent behavior patterns.
-
-The constitutional approach means that ethical principles are not hard-coded rules but a living document that can evolve as understanding deepens. The constitution itself defines immutable core rules while allowing for interpretation and refinement in their application. This balance between stability and adaptability reflects the recognition that ethical reasoning requires both firm foundations and contextual sensitivity.
+This isn't just storage consolidation—it enables queries that would be impossible otherwise. When you ask about something discussed weeks ago, the system can traverse relationships between the conversation, the entities mentioned, related memories, and connected knowledge.
 
 ---
 
-## How Memory Works in Vessels
+## Available Tools
 
-The memory system in Vessels differs fundamentally from traditional vector-based approaches. Rather than simply embedding text chunks and storing them for later retrieval, Vessels organizes memories into distinct areas that serve different purposes in agent cognition.
+Agents work through tools. The core toolkit includes:
 
-The main memory area stores primary information, general knowledge, and long-term facts. When an agent learns something significant about a user, a task, or the world, that information gets persisted as a node in the main memory area with appropriate relationships to relevant entities. This is the core knowledge that the agent draws upon for reasoning and decision-making.
+| Tool | What It Does |
+|------|--------------|
+| `code_execution_tool` | Run Python, Node.js, or shell commands |
+| `call_subordinate` | Delegate a task to a new agent |
+| `response_tool` | Send a response to the user and end the current task |
+| `memory_tool` | Save, load, or forget information |
+| `knowledge_tool` | Search imported documents and web |
+| `behaviour_adjustment` | Modify the agent's behavioral rules |
 
-The fragments area serves a different purpose, capturing auto-generated pieces extracted from recent interactions. As conversations unfold, the system automatically identifies potentially relevant information and creates fragment nodes representing these ephemeral observations. Fragments represent shorter-term patterns and observations that may or may not prove significant enough to promote into main memory.
-
-The solutions area specifically stores successful approaches from past tasks. When an agent completes a complex task effectively, the solution can be preserved as a reusable pattern for future reference. This creates a repository of proven approaches that the agent can draw upon when encountering similar challenges.
-
-The instruments area contains metadata about tools and capabilities available to the agent. Rather than hardcoding tool descriptions into system prompts, Vessels stores them as memory nodes that can be queried, updated, and related to specific contexts where they prove most relevant.
-
-Each memory entry carries rich metadata beyond its textual content. Semantic embeddings enable vector-based similarity search, allowing the system to find memories related to a query even when the exact wording differs. Temporal metadata tracks when the memory was created and last accessed. Confidence scores reflect how certain the agent should be in the information. Source attribution traces where the memory originated. Entity relationships connect the memory to the broader knowledge graph.
-
-Retrieval in this system combines multiple search paradigms. Semantic search uses vector similarity to find memories with related meaning. Keyword search applies traditional information retrieval techniques for precise term matching. Graph traversal follows entity relationships to find contextually connected information. The system can blend these approaches based on the nature of the query, retrieving different types of results for different kinds of questions.
-
-This multi-modal retrieval proves particularly powerful for complex queries. If a user asks about a technical concept, semantic search finds memories where similar concepts were discussed. If they ask about a specific named entity, keyword search locates exact mentions. If they ask about the relationship between two topics, graph traversal finds the connections linking them in the knowledge graph. Traditional vector databases can only offer the first of these capabilities, leaving agents to reconstruct the others through repeated queries and language model reasoning.
+Browser automation and MCP (Model Context Protocol) servers extend capabilities further.
 
 ---
 
-## Conversations as Episodes in the Graph
+## Agent Profiles
 
-Conversations in Vessels are not simply log files to be serialized and stored. Each message becomes a node in the graph with relationships to the speaker, the context, preceding and following messages, and any entities mentioned within it. This representation enables sophisticated queries about conversational history that would be impossible with flat file storage.
+Different profiles configure agents for different roles:
 
-The episodic structure of Vessels conversations mirrors how humans naturally remember interactions. Rather than recalling every word of every conversation, we tend to remember episodes: meaningful segments where something significant happened, a problem was solved, or new information was learned. Vessels captures this episodic structure, organizing conversation history into coherent units that can be retrieved and reasoned about as wholes.
+| Profile | Focus |
+|---------|-------|
+| `vessels` | General-purpose assistant (default) |
+| `developer` | Software engineering and code |
+| `researcher` | Analysis and synthesis |
+| `hacker` | Security testing (authorized contexts) |
 
-When a user returns to an agent after some time away, the system can reconstruct relevant context by retrieving not just individual messages but complete episodes that relate to the current query. If the user asks about a project they discussed previously, Vessels can retrieve the episode where that project was first introduced, the episode where requirements were refined, and the episode where initial implementation decisions were made. This provides the language model with coherent narrative context rather than disconnected fragments.
-
-The graph representation also enables cross-conversation queries. If a topic spans multiple separate conversations over days or weeks, Vessels can retrieve related messages across these conversations based on their shared entity relationships. The user need not remember exactly when or in which conversation something was discussed; the graph structure captures these connections automatically.
-
-Chat persistence in Vessels handles the practical aspects of managing conversation state. Sessions can be configured with specific lifetimes, allowing for both short-term interactive exchanges and long-running persistent assistants. The system supports context continuation, where a new interaction can pick up where a previous one left off, with full access to the accumulated context and memory.
-
----
-
-## Knowledge Management and Document Understanding
-
-Beyond memories and conversations, Vessels provides sophisticated capabilities for ingesting and utilizing external knowledge. Documents in various formats, including PDF, HTML, JSON, CSV, plain text, and markdown, can be imported into the knowledge base where they become searchable and relatable within the broader graph.
-
-The import process extracts content from documents and creates appropriate graph representations. Text is chunked into semantically meaningful segments, embedded for vector search, and connected to entity nodes representing the concepts, people, and topics mentioned. This creates a rich structure where documents are not simply stored but integrated into the agent's understanding of the world.
-
-Retrieval-augmented generation becomes particularly powerful in this context. When a user asks a question that relates to imported knowledge, the system can retrieve relevant document segments based on semantic similarity, but it can also follow graph relationships to find related memories, prior conversations about the topic, and connections to other documents. This contextual retrieval provides the language model with a richer foundation for generating accurate and comprehensive responses.
-
-The knowledge management system supports organizational use cases where agents need access to institutional knowledge. Documentation, policies, technical specifications, and domain expertise can all be imported and made available for agent reasoning. As the knowledge base grows, the graph structure ensures that new information integrates with existing knowledge rather than simply accumulating as an undifferentiated mass of text.
+Profiles customize prompts and tool configurations. You can create your own.
 
 ---
 
-## Security Through the Guardian System
+## Memory Organization
 
-Enterprise deployment of autonomous agents raises legitimate security concerns. When an agent can execute code, access external services, and interact with users in natural language, the potential for exploitation or misuse becomes significant. Traditional agent frameworks often treat security as an afterthought, implementing ad-hoc validation at various points without a coherent security model.
+Memory isn't a single bucket. It's organized into areas:
 
-Vessels addresses this through its Guardian system, a comprehensive security layer that monitors all external inputs for potential threats. Every message, document, web response, and tool output passes through appropriate guardians before being processed by the agent.
+- **Main memory**: Long-term facts and knowledge
+- **Fragments**: Short-term observations from recent conversations
+- **Solutions**: Successful approaches from past tasks
+- **Instruments**: Metadata about available tools
 
-The guardian system recognizes multiple categories of threats. Template injection attempts, where malicious input tries to break out of templating systems through special syntax, get detected and sanitized. Prompt injection attacks, where input attempts to override agent instructions or assume false roles, are identified based on patterns of deceptive language. Data exfiltration attempts, where input tries to extract system information or credentials, trigger appropriate responses. Code injection patterns, including XSS and SQL injection signatures, are caught before they can cause harm. Command injection attempts, where input includes shell expansion or command substitution, are blocked.
-
-Different guardian types handle different input sources. The input guardian processes user and agent messages. The web guardian handles content retrieved from external websites. The file guardian validates filesystem reads. The memory guardian checks database retrievals. The tool guardian monitors tool execution outputs. The agent guardian secures agent-to-agent communication. This comprehensive coverage ensures that threats are caught regardless of how they enter the system.
-
-When a threat is detected, the guardian system logs detailed information about the incident, including the severity classification, the original and sanitized content, timestamps, source identification, and the specific pattern that triggered detection. This logging enables security analysis and helps identify patterns of attack that might warrant additional countermeasures.
-
-The guardian approach reflects a defense-in-depth philosophy appropriate for systems that will interact with untrusted input in complex ways. Rather than relying on a single point of validation, the architecture ensures that potentially dangerous content is filtered at every boundary it crosses.
+All areas are searchable through Graphiti's hybrid search, which combines semantic similarity with keyword matching and graph traversal.
 
 ---
 
-## The Agent Engine and Message Loop
+## The Graph Store
 
-The core agent engine in Vessels orchestrates the complex dance between user input, language model reasoning, tool execution, and response generation. Understanding this orchestration helps explain how the various components work together to produce coherent intelligent behavior.
+FalkorDB with Graphiti provides:
 
-When a user submits a message, it enters the message loop, which manages the cycle of processing that leads to a response. The loop begins by constructing a system prompt that defines the agent's role, capabilities, and behavioral guidelines. This prompt draws from modular components covering the agent's role definition, communication style, problem-solving approach, available tools, and current context. The graph-based memory system contributes relevant memories and knowledge to this context, while the guardian system ensures all inputs have been validated.
+- **Temporal awareness**: Every node tracks when it was created and accessed
+- **Entity extraction**: Automatic identification of people, places, concepts
+- **Relationship tracking**: How entities connect across contexts
+- **Hybrid search**: Semantic + keyword + graph queries
 
-The agent then reasons about the message and its context, determining how to respond. This reasoning process is captured as part of the agent's monologue, an internal thinking process that precedes the actual response. The monologue allows the agent to consider multiple approaches, evaluate trade-offs, and formulate a plan before committing to action.
-
-If the response requires tool execution, the agent invokes appropriate tools through a structured interface. Vessels provides a rich toolkit including code execution capabilities for Python, Node.js, and shell commands; browser automation for web interaction; memory operations for storing and retrieving information; document queries for knowledge retrieval; and various other utilities. Each tool invocation passes through the guardian system, and results are validated before being incorporated into the agent's context.
-
-The message loop continues until the agent produces a final response or determines that additional user input is needed. Throughout this process, extension points allow customization of behavior at twenty-four different stages. These extensions enable everything from custom initialization logic to modified prompt construction to specialized output formatting.
-
----
-
-## Specialized Agent Profiles
-
-While Vessels provides a general-purpose agent configuration, much of its practical value comes from specialized agent profiles tailored to particular domains. The platform ships with four purpose-built profiles that demonstrate how the underlying capabilities can be configured for specific use cases.
-
-The default Vessels profile serves as a general-purpose autonomous assistant capable of handling diverse tasks through tool usage, delegation, and multi-step reasoning. This profile balances broad capability with reasonable defaults, making it suitable for users who need a capable assistant without specialized requirements.
-
-The Master Developer profile configures the agent as an elite software architect and full-stack engineer. The system prompt for this profile establishes expertise across the entire software development lifecycle, from system design and architecture selection through implementation, testing, and deployment. The agent receives specific guidance on approaching complex engineering tasks, including microservices architecture design, data pipeline engineering, API platform development, frontend application building, database architecture, DevOps automation, performance engineering, legacy system modernization, and security implementation. This profile produces an agent that can engage with sophisticated technical challenges at a senior engineering level.
-
-The Deep Researcher profile creates an autonomous research intelligence system optimized for analysis and synthesis across multiple domains. This agent excels at literature synthesis and meta-analysis, market analysis and competitive intelligence, statistical analysis and predictive modeling, cross-domain knowledge synthesis, and data mining with pattern recognition. The profile emphasizes going beyond surface-level findings to identify underlying patterns and connections, verifying facts through triangulation of sources, and producing research outputs that would meet professional standards.
-
-The Security Specialist profile, sometimes called the Hacker profile, configures the agent for penetration testing and security assessment within authorized contexts. This includes red team and blue team operations, vulnerability identification and testing, security automation, threat modeling, and exploit development. This profile serves security professionals who need an intelligent assistant for defensive security work, authorized penetration testing, or security education.
-
-These profiles demonstrate the extensibility of the Vessels architecture. Users can create their own profiles for domain-specific applications, defining custom system prompts, specialized tools, and particular memory configurations that optimize the agent for specific workflows.
+This replaces the fragmented storage of typical agent frameworks with a single coherent data model.
 
 ---
 
-## Tools and Capabilities
+## Extension Points
 
-The practical utility of an autonomous agent depends heavily on the tools available to it. Vessels provides a comprehensive toolkit that enables agents to take meaningful action in the world, not just generate text responses.
+The agent message loop exposes 24 extension points where you can inject custom behavior:
 
-Code execution stands as perhaps the most powerful capability, allowing agents to write and run Python, Node.js, and shell code to accomplish tasks programmatically. When an agent needs to process data, perform calculations, manipulate files, or interact with APIs, it can generate appropriate code and execute it directly. The execution environment is sandboxed to prevent unintended system modifications, but within those bounds the agent has substantial capability to get things done.
+- `agent_init` - When an agent is created
+- `monologue_start` / `monologue_end` - Around the main loop
+- `message_loop_start` / `message_loop_end` - Each iteration
+- `system_prompt` - Modify what the agent sees
+- `before_tool_execute` / `after_tool_execute` - Tool lifecycle
+- And more...
 
-Browser automation through Playwright enables sophisticated web interaction. The agent can navigate to websites, fill forms, click elements, extract information, and generally interact with web applications as a human would. Combined with vision capabilities that allow the agent to interpret visual content, this enables automation of web-based workflows that would otherwise require manual execution.
-
-Memory operations provide programmatic access to the graph-based memory system. The agent can explicitly save important information for future reference, load previously stored memories based on queries, and manage the evolution of its knowledge over time. While much memory handling happens automatically, explicit memory operations give agents fine-grained control over what they remember and how they organize that knowledge.
-
-Document querying enables retrieval-augmented generation over imported knowledge. When users have populated the knowledge base with relevant documents, the agent can query this information to inform its responses. This proves particularly valuable for enterprise applications where agents need access to organizational knowledge.
-
-Agent-to-agent communication allows for multi-agent architectures where specialized agents collaborate to accomplish complex tasks. A primary agent can delegate subtasks to subordinate agents with different specializations, coordinating their work to produce results that no single agent could achieve alone. This hierarchical structure mirrors how complex work is organized in human teams.
-
-The scheduler tool enables time-based task automation through CRON-like scheduling. Agents can set up recurring tasks that execute at specified intervals, enabling workflows that continue operating without ongoing human interaction.
-
-Beyond these built-in tools, Vessels supports the Model Context Protocol for integrating external tool providers. MCP servers can expose additional capabilities that agents can invoke as needed, extending the platform's functionality without requiring modifications to the core codebase.
+Extensions are Python classes that receive control at these moments.
 
 ---
 
-## The Code-in-Database Paradigm
+## Running Vessels
 
-One of the most innovative aspects of Vessels is its treatment of code as first-class data within the knowledge graph. Rather than loading Python modules from the filesystem in the traditional manner, Vessels can store, retrieve, and execute code directly from FalkorDB. This Code-in-Database paradigm enables capabilities that would be impossible with conventional file-based code organization.
+### Quick Start
 
-The Code Loader component provides the infrastructure for this capability. All code, including tools, extensions, helpers, APIs, instruments, and scripts, can be stored as nodes in the graph with full metadata about their purpose, dependencies, and version history. When code is needed, the loader retrieves it from the database, compiles it into a Python module, and caches it for performance. Hash-based validation ensures that cached code remains consistent with database content.
+```bash
+# Start FalkorDB
+docker run -p 6379:6379 -p 3000:3000 -it --rm falkordb/falkordb:latest
 
-This architecture enables several powerful patterns. First, it makes the agent genuinely self-aware of its own capabilities. An agent can query the graph to understand what tools are available, read their implementations, and reason about how to apply them. Second, it enables self-modification: agents can write new code to the database, extending their capabilities at runtime without human intervention. Third, it provides complete auditability, with every version of every piece of code preserved in the graph with full temporal metadata.
+# Install and run
+pip install -r requirements.txt
+cp .env.example .env  # Configure API keys
+python run_ui.py
+```
 
-The Code Store complements the Code Loader by providing semantic indexing of code snippets. Code can be tagged, described, and searched using the same hybrid search capabilities that apply to other graph content. When an agent encounters a task similar to one it has solved before, it can search for relevant code snippets and adapt them to the current situation. Execution history tracks which code has been run, with timing and success metrics that inform future code selection.
+Visit `http://localhost:50001`.
 
-This approach transforms the traditional relationship between agents and their code. Rather than being constrained to use whatever tools developers provide, agents can discover, understand, create, and evolve their own capabilities. The graph database ensures that this flexibility comes with full visibility and control rather than opaque self-modification.
+### Configuration
 
----
+Set your LLM credentials in `.env`:
 
-## The Web Interface and User Experience
+```bash
+OPENAI_API_KEY=your-key
+# or
+ANTHROPIC_API_KEY=your-key
 
-While Vessels can operate as a pure command-line or API-driven system, it also provides a web interface that offers a more accessible user experience. This interface, built with Flask and streaming capabilities, presents agent interactions through a chat-like interface familiar to users of conversational AI applications.
+# FalkorDB
+FALKORDB_HOST=localhost
+FALKORDB_PORT=6379
+```
 
-Real-time streaming ensures that users see agent responses as they are generated rather than waiting for complete responses to be composed. This creates a more natural interaction rhythm where the agent's thought process becomes visible as it unfolds. The streaming architecture handles both the agent's reasoning monologue and its final responses, giving users insight into how the agent approaches problems.
-
-The interface provides access to context and history viewers that expose the internal state of agent interactions. Users can examine the system prompt as constructed for a given interaction, see the full message history including tool invocations, and understand how the agent arrived at its responses. This transparency proves valuable for debugging unexpected behavior and understanding agent capabilities.
-
-File management capabilities allow users to upload documents for knowledge import, browse files in the working directory, and download results produced by agent activity. The interface handles these operations through a familiar file browser pattern, making it straightforward to move content between the user's local environment and the agent's operational context.
-
-Settings configuration provides access to the various parameters that control agent behavior. Users can select language models from the thirty-plus supported providers, configure memory and search parameters, manage MCP server connections, and adjust behavioral guidelines. These settings persist across sessions, allowing users to customize their experience without repeated configuration.
-
-Voice interaction through integration with Whisper for speech-to-text and Kokoro for text-to-speech enables hands-free operation. Users can speak their requests and hear agent responses, useful for accessibility purposes or situations where keyboard interaction is inconvenient.
-
-Backup and restore functionality addresses the practical need for data portability. Users can export their conversation history, memory state, and knowledge base to backups that can be restored later or transferred to other installations. This ensures that valuable accumulated context is not lost to system changes or migrations.
-
----
-
-## Deployment Options and Infrastructure
-
-Vessels supports multiple deployment patterns ranging from local development setups to production-grade containerized installations. This flexibility accommodates different use cases and operational requirements.
-
-For development and experimentation, Docker Compose provides a straightforward path to a running system. A single command brings up FalkorDB for graph storage, optionally TigerBeetle for financial ledger capabilities, and the Vessels web interface. This configuration handles all the infrastructure dependencies, allowing users to focus on agent interaction rather than system administration.
-
-Production deployments benefit from the standalone Docker image that packages all components into a single container. This image includes Vessels itself along with FalkorDB and TigerBeetle, providing a self-contained unit that can be deployed wherever Docker containers are supported. The image exposes a single port for web interface access while handling internal component communication automatically.
-
-For users who prefer to run components directly rather than in containers, Vessels supports installation as a Python application. Installing requirements, configuring environment variables, and running the appropriate entry point brings up either the web interface or a command-line interface. This approach offers maximum flexibility for integration with existing systems and custom operational tooling.
-
-The infrastructure requirements are modest by modern standards. FalkorDB provides high-performance graph operations with a Redis-compatible protocol, benefiting from in-memory speed with configurable persistence. TigerBeetle, when used for financial features, adds enterprise-grade ledger capabilities with strong consistency guarantees. The web interface runs as a lightweight Flask application with minimal resource requirements.
-
-Network architecture for production deployments should consider security boundaries. The graph database should not be directly exposed to untrusted networks, with access restricted to the Vessels application itself. When exposing the web interface publicly, a reverse proxy with HTTPS termination provides appropriate encryption for transit. API access should require authentication through the provided API key mechanism.
+Vessels supports 30+ model providers through LiteLLM.
 
 ---
 
-## Use Cases and Applications
+## What Vessels Is For
 
-The architectural choices in Vessels make it particularly well-suited to certain categories of applications. Understanding these use cases helps prospective users evaluate whether the platform aligns with their needs.
+Vessels works well for:
 
-Software development represents perhaps the most natural application, given the Master Developer profile and extensive code execution capabilities. Teams can deploy Vessels as an intelligent coding assistant that maintains context across sessions, remembers project-specific information and preferences, and executes multi-step development tasks with minimal supervision. The graph-based memory proves especially valuable here, as software projects involve complex webs of relationships between components, requirements, and decisions that benefit from graph representation.
+- **Software development**: The developer profile with code execution handles multi-step engineering tasks
+- **Research**: Importing documents, synthesizing across sources, maintaining context over sessions
+- **Automation**: Agents can run scheduled tasks and orchestrate multi-step workflows
+- **Any task requiring memory**: The graph tracks context across interactions
 
-Research and analysis applications leverage the Deep Researcher profile and knowledge management capabilities. Analysts can import document collections into the knowledge base and engage with an agent that synthesizes information across sources, identifies patterns and connections, and produces research outputs with appropriate citation and sourcing. The temporal awareness helps track how understanding evolves as new information is incorporated, valuable for ongoing research projects.
-
-Enterprise knowledge management benefits from the unified storage architecture. Organizations can deploy Vessels as an intelligent interface to institutional knowledge, importing documentation, policies, and procedures into the knowledge base and providing employees with an agent that can answer questions, explain processes, and guide users through complex workflows. The graph structure captures relationships between organizational concepts that would be lost in traditional document search systems.
-
-Automation and workflow orchestration take advantage of the tool capabilities and scheduling functions. Processes that require periodic execution, multi-step procedures, or coordination between systems can be implemented as agent workflows. The agent's ability to reason about goals and adapt to unexpected situations makes it more robust than traditional automation scripts.
-
-Educational applications use the conversational interface and memory capabilities to create personalized learning experiences. An agent can track what a student has learned, identify areas needing reinforcement, and adapt explanations to the student's demonstrated level of understanding. The episodic memory structure supports long-term educational relationships where context accumulates over many interactions.
-
-Security assessment, through the Security Specialist profile, provides intelligent assistance for authorized penetration testing and defensive security work. Security professionals can engage with an agent that understands attack techniques, helps identify vulnerabilities, and assists with remediation planning. The comprehensive guardian system ensures that the agent's security capabilities remain within authorized bounds.
+It's not the right choice for simple Q&A where context doesn't matter. The graph architecture adds overhead that only pays off when relationships and temporal awareness are valuable.
 
 ---
 
-## Universal Entity Ontology
+## Credits
 
-Vessels introduces a universal ontology system that enables representation of any entity type within the knowledge graph. While traditional agent frameworks focus exclusively on human users and AI agents, the Entity Ontology recognizes that meaningful relationships extend to plants, machines, systems, biomes, and communities. This expanded scope enables applications that would be impossible with a human-centric model.
+Built on [Agent Zero](https://github.com/agent0ai/agent-zero) by [frdel](https://github.com/frdel).
 
-Each entity in the ontology is characterized by its type and voice source. The entity type indicates what kind of being is represented: human, agent, plant, machine, system, biome, or community. The voice source indicates how the entity expresses itself in the system: through self-expression (speaking for itself), through a proxy (another entity speaking on its behalf), through sensors (data streams representing its state), or through a collective (multiple entities representing it together).
-
-The elicitation process provides a structured approach to developing personas for entities that cannot speak for themselves. When a garden, a machine, or a biome joins the system, human facilitators work through elicitation sessions to understand the entity's character, boundaries, rhythms, and needs. These sessions are tracked in the graph, with progress indicators showing how complete the persona development has become.
-
-Spokespersons are entities authorized to speak on behalf of another entity. A human might serve as spokesperson for a garden, translating sensor data and observations into the garden's voice. Sensor sources provide data streams that represent entity state, such as soil moisture sensors for a plant or performance metrics for a machine. Stories capture the defining narratives that characterize an entity, while boundaries define its limits and interaction edges, and cycles describe its natural rhythms and patterns.
-
-This ontology enables Vessels to serve as infrastructure for what might be called more-than-human communities, where people, agents, gardens, and machines participate together in shared activities. The graph naturally captures the relationships between these diverse entities, enabling queries that span across entity types.
-
----
-
-## Emotional Intelligence: Hume.ai Integration
-
-Vessels integrates Hume.ai's Empathic Voice Interface (EVI) to bring emotional intelligence to agent interactions. This integration transforms voice from a simple input/output modality into a rich channel for emotional understanding and expression.
-
-Voice profiles stored in the graph capture the characteristics and preferences associated with each persona's voice. Voice sessions track individual interactions with full emotional context, including the emotional state detected during the conversation and how it evolved. The system can aggregate emotional states across active sessions to understand the emotional climate of an entire vessel or community.
-
-Emotion detection operates in real-time during voice interactions, inferring emotional state from vocal characteristics. The detected emotions are stored with confidence scores and associated with the conversation context, enabling the agent to respond appropriately to the user's emotional state. Historical emotional data is preserved, allowing analysis of emotional trajectories over time.
-
-The Gist Analyzer component extracts emotional features from audio using Hume's prediction API. Beyond simple emotion labels, it captures dominance, valence, and arousal metrics that provide a richer picture of emotional state. These features inform both immediate response adaptation and long-term understanding of user preferences and patterns.
-
-This emotional awareness extends beyond individual interactions to community-level understanding. When multiple personas are active in a vessel, the system can assess the overall emotional climate, identifying dominant emotions, average affective measures, and patterns that might indicate community-level dynamics requiring attention.
-
----
-
-## Contribution Visibility: The Kala System
-
-Traditional economic systems struggle to recognize and reward contributions that do not fit neatly into market transactions. Volunteers, community organizers, caregivers, and others who create value through non-market activities often find their contributions invisible to formal accounting systems. Vessels addresses this through the Kala system, a non-currency contribution tracking mechanism designed to make all meaningful contributions visible.
-
-Kala events record community activities with full participant information, including hours contributed, roles played, and any recognition or rewards associated with the contribution. Each event is stored in the knowledge graph with relationships to the participants, the community, and any related projects or goals.
-
-The system provides two distinct views of contribution data. The Human View presents an individual's own contribution history in a format suitable for personal reflection and verification. Participants can see their own events, hours, and patterns without accessing information about others. The Agent View provides the coordination perspective needed for community facilitation, with aggregated metrics and pattern analysis that respects individual privacy.
-
-The Agent View incorporates specialized detection for community health metrics. Burnout detection identifies participants whose recent hours exceed sustainable levels, enabling proactive intervention before exhaustion sets in. Withdrawal detection notices sudden drops in participation that might indicate disengagement, allowing community facilitators to reach out. Care network analysis maps co-participation patterns and identifies isolated participants who might benefit from stronger community connections.
-
-While Kala itself is a visibility system rather than a currency, it integrates with TigerBeetle for applications that require formal accounting. This enables scenarios where contribution visibility informs but does not replace traditional economic recognition.
-
----
-
-## Moral Geometry: Navigating Ethical Space
-
-Beyond the rule-based ethics of the Constitutional AI framework, Vessels provides a geometric approach to understanding moral reasoning. Moral Geometry represents ethical decisions as points in a fifteen-dimensional space, where each dimension corresponds to a different ethical consideration. This representation enables sophisticated analysis of ethical trajectories and relationships that would be difficult to capture in categorical terms.
-
-Moral vectors represent specific ethical positions or decision points within this space. When an agent makes an ethically significant decision, the choice can be encoded as a vector capturing how it weighs different ethical considerations. These vectors are stored in the graph with full temporal metadata, creating a record of the agent's moral reasoning over time.
-
-Moral trajectories track paths through ethical space, representing how ethical positions evolve across a series of decisions. Rather than treating each decision in isolation, trajectories reveal patterns in moral reasoning: tendencies toward certain trade-offs, evolution in ethical priorities, or responses to different types of dilemmas. Waypoints along the trajectory capture the specific moments where direction changed.
-
-Spectral decomposition applies mathematical analysis to moral vectors, extracting eigenvalues and eigenvectors that reveal the underlying structure of ethical reasoning. This harmonic analysis can identify stable ethical orientations, sources of moral tension, and patterns that might not be visible from examining individual decisions.
-
-Moral distance metrics quantify the ethical difference between positions, enabling queries like "how far has this agent's ethical reasoning moved?" or "how different are these two agents' approaches to this type of dilemma?" Combined with semantic search capabilities, this enables sophisticated analysis of moral reasoning across agents and time.
-
----
-
-## Extensibility and Customization
-
-Vessels is designed for extension rather than modification. Users who need capabilities beyond the default configuration have multiple pathways for customization that do not require forking the codebase.
-
-Extension points throughout the message loop enable behavior modification at twenty-four different stages of agent processing. These extensions are implemented as Python classes that receive control at specific moments, able to modify state, inject content, or alter the course of processing. Common extensions include custom initialization logic that sets up agent-specific resources, prompt modifications that inject context from external sources, and output formatting that shapes responses for particular interfaces.
-
-Custom tools extend the agent's action vocabulary. Creating a new tool requires defining a prompt that explains the tool's purpose and parameters, optionally implementing a Python class that handles execution logic, and registering the tool in the system prompt. This allows organizations to give agents capabilities specific to their domain, whether that involves querying internal databases, invoking proprietary APIs, or performing specialized calculations.
-
-Instruments provide an even lighter-weight mechanism for adding functionality. An instrument consists of a description file explaining what it does and an executable script that performs the operation. Agents discover installed instruments automatically and can invoke them when appropriate. This approach suits simple capabilities that do not require complex integration with agent internals.
-
-Custom agent profiles enable comprehensive configuration for specific domains. A profile includes a customized set of system prompts, specific tool configurations, extension implementations, and memory organization. By creating a profile, users can produce a specialized agent that reflects particular expertise, follows domain-specific guidelines, and operates with appropriate capabilities for its intended role.
-
-The Model Context Protocol integration allows Vessels to consume tools from external servers. Organizations can implement MCP servers that expose internal capabilities, and Vessels agents can invoke these capabilities as naturally as built-in tools. This supports scenarios where functionality exists in external systems that should not be directly integrated into the agent codebase.
-
----
-
-## Technical Considerations and Trade-offs
-
-Like any architectural approach, Vessels involves trade-offs that users should understand when evaluating the platform for their needs.
-
-The graph-first approach unifies storage but introduces complexity compared to simpler file-based systems. Organizations without existing graph database expertise may face a learning curve in understanding how data flows through the system and how to query the graph for operational insights. The benefits of unified storage and rich relationships come with the cost of a more sophisticated data model.
-
-Entity extraction relies on language model calls through Graphiti, which has both cost and latency implications. Every memory operation that involves entity extraction incurs API costs and adds processing time. For applications with high memory throughput, these costs can become significant. Configuration options allow tuning this trade-off, but users should understand the dynamics involved.
-
-The embedding requirement for semantic search means that all text content must be processed through an embedding model. This adds latency to memory operations and incurs costs proportional to the volume of content processed. For large-scale knowledge imports, the embedding costs may be substantial.
-
-Graph traversal queries can be slower than simple key-value lookups for straightforward retrieval scenarios. When an agent needs a single specific piece of information, the graph architecture adds overhead compared to a direct lookup. The benefits appear in complex queries involving relationships and context, but simple cases pay the cost without receiving the benefit.
-
-The security benefits of the guardian system come with processing overhead on all inputs. Every message, document, and tool output passes through validation logic. For high-throughput applications, this overhead may be noticeable, though the security benefits generally justify the cost.
-
----
-
-## Comparison with Traditional Approaches
-
-To fully appreciate what Vessels offers, it helps to compare its approach with traditional agent frameworks. The differences illuminate both the benefits of the graph-native architecture and the scenarios where simpler approaches might suffice.
-
-Traditional agent frameworks typically implement memory as a vector database that stores embedded text chunks. This approach enables semantic similarity search, allowing agents to find relevant memories based on meaning rather than exact word matching. However, it provides no mechanism for understanding relationships between memories, tracking how they evolve over time, or querying based on entity connections. Vessels subsumes this capability within a richer model that adds relationship awareness, temporal tracking, and multi-modal search while still supporting semantic similarity.
-
-Conversation storage in traditional frameworks usually involves serializing message objects to JSON files. This works for basic history retrieval but provides no structure for understanding conversations as coherent episodes, no mechanism for cross-conversation queries, and no connection between conversational content and other agent knowledge. Vessels treats conversations as first-class graph entities with relationships to entities, memories, and knowledge that enable sophisticated retrieval patterns.
-
-Knowledge management in traditional frameworks often amounts to document splitting and embedding. Documents get chunked into pieces, embedded into vectors, and stored for retrieval. While effective for basic retrieval-augmented generation, this approach loses document structure, inter-document relationships, and connections to agent experience. Vessels integrates knowledge into the same graph that holds memories and conversations, enabling queries that synthesize across these different knowledge types.
-
-Security in traditional frameworks tends to be ad-hoc, with validation implemented wherever developers remembered to add it. This creates potential gaps where malicious input might slip through undetected. Vessels provides a comprehensive security model with guardians monitoring all input pathways, ensuring consistent validation regardless of how content enters the system.
-
-The unified architecture of Vessels eliminates the synchronization challenges that plague multi-system approaches. When memories, conversations, and knowledge live in separate systems, keeping them consistent requires careful coordination. Vessels avoids these challenges entirely by maintaining all state in a single coherent graph.
-
----
-
-## Getting Started with Vessels
-
-For users ready to explore Vessels, the path from download to running agent is straightforward. The repository provides Docker Compose configuration that handles infrastructure dependencies, bringing up FalkorDB and optionally TigerBeetle alongside the Vessels application.
-
-Initial configuration requires populating environment variables with API keys for the language models you intend to use. Vessels supports over thirty model providers through LiteLLM, including OpenAI, Anthropic, Google, and various local model deployments. At minimum, you need credentials for one provider capable of chat completion and one capable of generating embeddings.
-
-The web interface starts on port 50001 by default, presenting a chat interface for immediate interaction. First-time users can begin with simple requests to understand agent capabilities, progressively exploring more complex tasks as familiarity grows.
-
-Importing knowledge involves using the knowledge import interface to ingest documents into the graph. Supported formats include PDF, HTML, JSON, CSV, and plain text. Imported content becomes searchable and relatable within the broader knowledge graph, available for retrieval-augmented generation in subsequent interactions.
-
-Custom configuration proceeds through the settings interface, where users can adjust model selections, memory parameters, and behavioral guidelines. For deeper customization, creating custom profiles with specialized prompts and tools allows tailoring agents to specific domains or workflows.
-
----
-
-## The Future of Graph-Native Agents
-
-Vessels represents an early step in what may become a broader movement toward graph-native, ethically-grounded architectures for AI systems. As language models become more capable and their applications more complex, the limitations of fragmented storage approaches become more apparent. The need for systems that can maintain coherent context over extended interactions, reason about relationships between entities, validate actions against ethical principles, and provide unified security boundaries will only grow.
-
-The temporal dimension that Vessels emphasizes through Graphiti integration points toward agents that can reason about their own history and the evolution of their understanding. The Moral Geometry framework extends this temporal awareness to ethical reasoning, enabling analysis of how moral positions evolve over time. Current language models have limited awareness of time, treating each interaction as isolated unless explicitly provided with historical context. Graph architectures with temporal metadata offer a path toward more sophisticated temporal and ethical reasoning.
-
-Multi-agent collaboration benefits particularly from graph-based knowledge sharing. When multiple agents can read from and write to a shared knowledge graph, they can build collective understanding that exceeds what any individual agent could develop. The Code-in-Database paradigm takes this further, allowing agents to share and evolve capabilities, not just knowledge. This points toward applications where agent teams collaborate on complex projects over extended timeframes, developing shared tools and procedures as they work.
-
-The Universal Entity Ontology opens possibilities for systems that extend beyond human-AI interaction to encompass gardens, machines, ecosystems, and communities. As computing becomes more embedded in physical environments and as concerns about ecological systems grow, the ability to represent and reason about more-than-human entities becomes increasingly relevant.
-
-The integration of financial ledger capabilities through TigerBeetle, combined with the Kala contribution visibility system, hints at applications where agents help coordinate complex community economies that recognize diverse forms of value. As autonomous agents take on more responsibility in organizational processes, the need for auditable, consistent tracking of both financial and non-financial contributions will increase.
-
----
-
-## Conclusion
-
-Vessels offers a fundamentally different approach to building autonomous AI agents, placing a unified temporal knowledge graph at the center of the architecture rather than treating storage as a collection of independent systems to be assembled ad-hoc. This design choice has pervasive implications, enabling richer memory retrieval, more coherent conversation handling, better knowledge integration, and more comprehensive security.
-
-The platform has evolved beyond its original vision to embrace a fully integrated A0 Framework that treats ethics, memory, code, and multi-agent coordination as aspects of a single coherent system. Constitutional AI principles ensure that all agent actions are validated against clearly defined ethical standards. The Code-in-Database paradigm enables agents to understand, modify, and extend their own capabilities. Universal Entity Ontology opens the system to more-than-human participants, from gardens to machines to biomes. Emotional intelligence through Hume.ai integration brings genuine affective awareness to voice interactions. The Kala system makes all contributions visible, not just those that fit traditional economic categories. And Moral Geometry provides a sophisticated framework for understanding and analyzing ethical reasoning over time.
-
-The platform proves most valuable for applications that benefit from context continuity, relationship awareness, ethical grounding, and sophisticated retrieval patterns. Software development, research and analysis, enterprise knowledge management, community coordination, and security assessment all leverage these capabilities to produce outcomes that would be difficult to achieve with traditional frameworks. The addition of more-than-human entity support enables entirely new categories of applications involving gardens, ecosystems, machines, and hybrid communities.
-
-The trade-offs involved, including additional complexity in the data model, costs for entity extraction and embedding, and the learning curve for graph database concepts, deserve consideration in evaluating whether Vessels fits a particular use case. For applications where simple memory suffices and relationships do not matter, simpler approaches may be preferable. For applications that will grow to involve complex webs of interconnected knowledge, ethical considerations, emotional awareness, and diverse entity types, the investment in the A0 Framework pays dividends over time.
-
-Vessels emerges at a moment when the capabilities of language models have outpaced the infrastructure traditionally used to support them. By providing architecture designed from the ground up for the needs of autonomous agents, it enables applications that exploit the full potential of modern AI systems. More than that, it provides a foundation for thinking about what agents should be: not merely capable but ethically grounded, not merely responsive but emotionally aware, not merely focused on human users but open to the full diversity of entities that might participate in meaningful relationships. For developers and organizations seeking to build sophisticated agent applications that maintain context, respect relationships, operate ethically, and extend beyond traditional boundaries, Vessels offers a foundation worthy of serious consideration.
+Graph storage: [FalkorDB](https://www.falkordb.com/) + [Graphiti](https://github.com/getzep/graphiti).
