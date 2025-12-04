@@ -5,7 +5,7 @@ Self-instantiating Docker setup for Windows 11. Just provide API keys and go.
 **Includes:**
 - **Vessels** - AI Agent Community Framework
 - **FalkorDB** - Graph database with Graphiti for knowledge
-- **TigerBeetle** - Financial ledger for Kala tracking
+- **TigerBeetle** - Financial ledger for currency transactions
 
 **Features:**
 - Entity Ontology (personas for humans, agents, plants, machines, systems, biomes...)
@@ -85,10 +85,10 @@ You need at least ONE LLM API key:
 │           └──────────────────┴─────────────────┘        │
 │                         │                               │
 │  ┌─────────────────────────────────────────────────────┐│
-│  │                Graph Store                          ││
+│  │           Graph Store (FalkorDB)                    ││
 │  │  - Entity Personas    - Moral Geometry              ││
-│  │  - Elicitation Sessions - Kala Events               ││
-│  │  - Voice Sessions     - Stories & Boundaries        ││
+│  │  - Kala Metrics       - Stories & Boundaries        ││
+│  │  - Voice Sessions     - Elicitation Sessions        ││
 │  └─────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────┘
                           │
@@ -210,8 +210,8 @@ docker run -d \
 
 All data persists in Docker volumes:
 
-- **FalkorDB**: Entity personas, moral geometry vectors, Kala events, stories, elicitation sessions
-- **TigerBeetle**: Financial ledger for Kala accounting (future)
+- **FalkorDB**: Entity personas, moral geometry vectors, Kala events/patterns/analytics, stories, elicitation sessions
+- **TigerBeetle**: Currency transactions (optional - when communities convert Kala to compensation)
 - **Work Directory**: Uploaded files, generated content
 
 Your API keys are stored in the local `.env` file and passed as environment variables.
