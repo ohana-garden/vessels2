@@ -123,6 +123,14 @@ class VesselNodeType(str, Enum):
     REGISTERED_TOOL = "registered_tool"     # Tools registered from discoveries
     # Tool output storage
     TOOL_RESULT = "tool_result"             # Large tool outputs stored in graph
+    # Tool Registry types - External tool management
+    TOOL_SOURCE = "tool_source"             # MCP server, OpenAPI spec, custom provider
+    CAPABILITY = "capability"               # What a tool can do
+    TOOL_OPERATION = "tool_operation"       # Individual operation a tool exposes
+    AUTH_REQUIREMENT = "auth_requirement"   # Auth reference (never stores secrets)
+    APPROVAL_RECORD = "approval_record"     # Guardian decision record
+    REGISTRY_SOURCE = "registry_source"     # External registry to sync from
+    SYNC_RUN = "sync_run"                   # Record of sync operation
 
 
 class MemoryArea(str, Enum):
