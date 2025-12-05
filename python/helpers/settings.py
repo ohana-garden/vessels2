@@ -1405,7 +1405,7 @@ def _adjust_to_version(settings: Settings, default: Settings):
 
 
 def _read_settings_file() -> Settings | None:
-    # Try FalkorDB first
+    """Load settings from FalkorDB graph store (DB-only, no file fallback)."""
     try:
         import asyncio
         from python.helpers.graph_store import get_graph_store
@@ -1424,24 +1424,20 @@ def _read_settings_file() -> Settings | None:
             db_settings = asyncio.run(_load_from_db())
             if db_settings:
                 return normalize_settings(db_settings)
-    except Exception:
-        pass  # FalkorDB not available, try file
-
-    # Fallback to file
-    if os.path.exists(SETTINGS_FILE):
-        content = files.read_file(SETTINGS_FILE)
-        parsed = json.loads(content)
-        return normalize_settings(parsed)
+    except Exception as e:
+        # Log error but don't fallback to file - DB is source of truth
+        PrintStyle.error(f"Failed to load settings from DB: {e}")
 
     return None
 
 
 def _write_settings_file(settings: Settings):
+    """Save settings to FalkorDB graph store (DB-only, no file fallback)."""
     settings = settings.copy()
     _write_sensitive_settings(settings)
     _remove_sensitive_settings(settings)
 
-    # Write to FalkorDB only (no filesystem backup for security)
+    # Write to FalkorDB only - no filesystem fallback for A0 pattern
     try:
         import asyncio
         from python.helpers.graph_store import get_graph_store
@@ -1457,10 +1453,8 @@ def _write_settings_file(settings: Settings):
         except RuntimeError:
             asyncio.run(_save_to_db())
     except Exception as e:
+        # Log error but don't fallback to file - DB is source of truth
         PrintStyle.error(f"Failed to save settings to FalkorDB: {e}")
-        # Fallback to encrypted file ONLY if DB is unavailable
-        content = json.dumps(settings, indent=4)
-        files.write_file_encrypted(SETTINGS_FILE, content)
 
 
 def _remove_sensitive_settings(settings: Settings):

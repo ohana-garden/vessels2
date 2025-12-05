@@ -121,6 +121,8 @@ class VesselNodeType(str, Enum):
     CRAWL_SOURCE = "crawl_source"           # Monitored web sources for discovery
     CRAWL_EVENT = "crawl_event"             # Record of a crawl operation
     REGISTERED_TOOL = "registered_tool"     # Tools registered from discoveries
+    # Tool output storage
+    TOOL_RESULT = "tool_result"             # Large tool outputs stored in graph
 
 
 class MemoryArea(str, Enum):
@@ -230,6 +232,45 @@ class SettingDocument:
     def __post_init__(self):
         if not self.updated_at:
             self.updated_at = datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class ToolResultDocument:
+    """A tool result stored in the graph (for large outputs)."""
+    id: str
+    context_id: str
+    tool_name: str
+    content: str
+    sequence: int = 0
+    timestamp: str = ""
+    metadata: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "context_id": self.context_id,
+            "tool_name": self.tool_name,
+            "content": self.content,
+            "sequence": self.sequence,
+            "timestamp": self.timestamp,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ToolResultDocument":
+        return cls(
+            id=data["id"],
+            context_id=data["context_id"],
+            tool_name=data.get("tool_name", "unknown"),
+            content=data["content"],
+            sequence=data.get("sequence", 0),
+            timestamp=data.get("timestamp", ""),
+            metadata=data.get("metadata", {}),
+        )
 
 
 # =============================================================================
@@ -637,6 +678,111 @@ class GraphStore:
         """Delete secrets from the graph."""
         query = """
         MATCH (n:Episode) WHERE n.name = 'secrets_store'
+        DETACH DELETE n
+        """
+        try:
+            await self._driver.execute_query(query)
+            return True
+        except Exception:
+            return False
+
+    # =========================================================================
+    # Tool Results Operations (replaces file-based tool output storage)
+    # =========================================================================
+
+    async def save_tool_result(
+        self,
+        context_id: str,
+        tool_name: str,
+        content: str,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """
+        Save a large tool result to the graph.
+
+        Replaces: _90_save_tool_call_file.py file storage
+        Returns: The tool result ID for reference
+        """
+        from python.helpers import guids
+
+        result_id = guids.generate_id(12)
+
+        # Get next sequence number for this context
+        sequence = await self._get_next_tool_result_sequence(context_id)
+
+        result_data = json.dumps({
+            "id": result_id,
+            "context_id": context_id,
+            "tool_name": tool_name,
+            "content": content,
+            "sequence": sequence,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "metadata": metadata or {},
+        })
+
+        await self._graphiti.add_episode(
+            name=f"tool_result_{context_id}_{sequence}",
+            episode_body=result_data,
+            source=EpisodeType.json,
+            reference_time=datetime.now(timezone.utc),
+            group_id=f"tool_results:{context_id}",
+        )
+
+        return result_id
+
+    async def _get_next_tool_result_sequence(self, context_id: str) -> int:
+        """Get the next sequence number for tool results in a context."""
+        query = f"""
+        MATCH (n:Episode) WHERE n.name STARTS WITH 'tool_result_{context_id}_'
+        RETURN count(n) as count
+        """
+        try:
+            result = await self._driver.execute_query(query)
+            if result and len(result) > 0:
+                return result[0].get("count", 0) + 1
+        except Exception:
+            pass
+        return 1
+
+    async def load_tool_result(self, context_id: str, sequence: int) -> Optional[ToolResultDocument]:
+        """Load a specific tool result by context and sequence."""
+        query = f"""
+        MATCH (n:Episode) WHERE n.name = 'tool_result_{context_id}_{sequence}'
+        RETURN n.content as content
+        """
+        result = await self._driver.execute_query(query)
+
+        if result and len(result) > 0:
+            try:
+                data = json.loads(result[0].get("content", "{}"))
+                return ToolResultDocument.from_dict(data)
+            except Exception as e:
+                PrintStyle.error(f"Failed to load tool result: {e}")
+        return None
+
+    async def load_tool_results_for_context(self, context_id: str) -> list[ToolResultDocument]:
+        """Load all tool results for a context."""
+        query = f"""
+        MATCH (n:Episode) WHERE n.name STARTS WITH 'tool_result_{context_id}_'
+        RETURN n.content as content
+        ORDER BY n.name
+        """
+        results = await self._driver.execute_query(query)
+
+        tool_results = []
+        for row in results:
+            try:
+                data = json.loads(row.get("content", "{}"))
+                tool_results.append(ToolResultDocument.from_dict(data))
+            except Exception as e:
+                PrintStyle.error(f"Failed to load tool result: {e}")
+
+        return tool_results
+
+    async def delete_tool_results_for_context(self, context_id: str) -> bool:
+        """Delete all tool results for a context."""
+        query = f"""
+        MATCH (n:Episode) WHERE n.name STARTS WITH 'tool_result_{context_id}_'
         DETACH DELETE n
         """
         try:
@@ -2237,6 +2383,141 @@ class GraphStore:
             return stats
         except Exception as e:
             return {"error": str(e)}
+
+    # =========================================================================
+    # Backup/Restore Operations (for A0 full-DB backup)
+    # =========================================================================
+
+    async def export_all_data(self) -> dict:
+        """
+        Export all graph data for backup purposes.
+
+        Returns a dictionary containing all settings, chats, memories,
+        tool results, and other stored data in JSON-serializable format.
+        """
+        export_data = {
+            "export_version": "1.0",
+            "export_timestamp": datetime.now(timezone.utc).isoformat(),
+            "settings": {},
+            "chats": [],
+            "memories": [],
+            "tool_results": [],
+            "secrets_hash": None,  # Don't export actual secrets, just existence marker
+        }
+
+        try:
+            # Export all settings
+            export_data["settings"] = await self.load_all_settings()
+
+            # Export all chats
+            chats = await self.load_all_chats()
+            export_data["chats"] = [chat.to_dict() for chat in chats]
+
+            # Export memories by area
+            for area in MemoryArea:
+                query = f"""
+                MATCH (n:Episode) WHERE n.name STARTS WITH 'memory_{area.value}_'
+                RETURN n.content as content
+                """
+                results = await self._driver.execute_query(query)
+                for row in results:
+                    try:
+                        data = json.loads(row.get("content", "{}"))
+                        data["_area"] = area.value
+                        export_data["memories"].append(data)
+                    except Exception:
+                        pass
+
+            # Export tool results
+            query = """
+            MATCH (n:Episode) WHERE n.name STARTS WITH 'tool_result_'
+            RETURN n.content as content
+            """
+            results = await self._driver.execute_query(query)
+            for row in results:
+                try:
+                    data = json.loads(row.get("content", "{}"))
+                    export_data["tool_results"].append(data)
+                except Exception:
+                    pass
+
+            # Check if secrets exist (don't export them)
+            secrets = await self.load_secrets()
+            export_data["secrets_hash"] = "exists" if secrets else None
+
+        except Exception as e:
+            PrintStyle.error(f"Failed to export graph data: {e}")
+
+        return export_data
+
+    async def import_all_data(self, import_data: dict, merge: bool = False) -> dict:
+        """
+        Import graph data from backup.
+
+        Args:
+            import_data: Dictionary containing exported data
+            merge: If True, merge with existing data; if False, replace
+
+        Returns:
+            Summary of imported items
+        """
+        summary = {
+            "settings": 0,
+            "chats": 0,
+            "memories": 0,
+            "tool_results": 0,
+            "errors": [],
+        }
+
+        try:
+            # Import settings
+            settings = import_data.get("settings", {})
+            for key, value in settings.items():
+                try:
+                    await self.save_setting(key, value)
+                    summary["settings"] += 1
+                except Exception as e:
+                    summary["errors"].append(f"Setting {key}: {e}")
+
+            # Import chats
+            for chat_data in import_data.get("chats", []):
+                try:
+                    chat = ChatDocument.from_dict(chat_data)
+                    await self.save_chat(chat)
+                    summary["chats"] += 1
+                except Exception as e:
+                    summary["errors"].append(f"Chat: {e}")
+
+            # Import memories
+            for mem_data in import_data.get("memories", []):
+                try:
+                    area = MemoryArea(mem_data.pop("_area", "main"))
+                    await self.save_memory(
+                        content=mem_data.get("content", ""),
+                        area=area,
+                        metadata=mem_data.get("metadata", {}),
+                    )
+                    summary["memories"] += 1
+                except Exception as e:
+                    summary["errors"].append(f"Memory: {e}")
+
+            # Import tool results
+            for result_data in import_data.get("tool_results", []):
+                try:
+                    await self.save_tool_result(
+                        context_id=result_data.get("context_id", "imported"),
+                        tool_name=result_data.get("tool_name", "unknown"),
+                        content=result_data.get("content", ""),
+                        metadata=result_data.get("metadata", {}),
+                    )
+                    summary["tool_results"] += 1
+                except Exception as e:
+                    summary["errors"].append(f"Tool result: {e}")
+
+        except Exception as e:
+            summary["errors"].append(f"Import failed: {e}")
+
+        return summary
 
 
 # =============================================================================
