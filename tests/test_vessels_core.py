@@ -349,11 +349,12 @@ class TestMoralGeometry:
 
     def test_moral_dimensions_defined(self, moral_module):
         """Test that all 15 moral dimensions are defined."""
-        MORAL_DIMENSIONS = moral_module["MORAL_DIMENSIONS"]
-        assert len(MORAL_DIMENSIONS) == 15
-        assert "compassion" in MORAL_DIMENSIONS
-        assert "justice" in MORAL_DIMENSIONS
-        assert "truth" in MORAL_DIMENSIONS
+        MoralDimension = moral_module["MoralDimension"]
+        dimensions = [d.value for d in MoralDimension]
+        assert len(dimensions) == 15
+        assert "compassion" in dimensions
+        assert "justice" in dimensions
+        assert "truth" in dimensions
 
     def test_moral_vector_creation(self, moral_module):
         """Test MoralVector creation."""
@@ -361,21 +362,23 @@ class TestMoralGeometry:
 
         vector = MoralVector()
         # Should initialize with zeros
-        assert vector.compassion == 0.0
+        assert vector.components["compassion"] == 0.0
 
         # Set some values
-        vector.compassion = 0.8
-        vector.justice = 0.6
-        assert vector.compassion == 0.8
+        vector.components["compassion"] = 0.8
+        vector.components["justice"] = 0.6
+        assert vector.components["compassion"] == 0.8
 
     def test_moral_vector_to_dict(self, moral_module):
         """Test MoralVector serialization."""
         MoralVector = moral_module["MoralVector"]
 
-        vector = MoralVector(compassion=0.7, justice=0.5)
+        vector = MoralVector()
+        vector.components["compassion"] = 0.7
+        vector.components["justice"] = 0.5
         data = vector.to_dict()
-        assert data["compassion"] == 0.7
-        assert data["justice"] == 0.5
+        assert data["components"]["compassion"] == 0.7
+        assert data["components"]["justice"] == 0.5
 
 
 # =============================================================================
@@ -440,23 +443,28 @@ class TestKala:
 
         view = HumanView(
             participant_id="alice",
-            events_participated=["e1", "e2"],
-            total_contributions=5,
+            total_kala=100.0,
+            event_count=5,
+            total_hours=10.0,
         )
         assert view.participant_id == "alice"
-        assert view.total_contributions == 5
+        assert view.event_count == 5
         # Human view should NOT expose patterns
-        assert not hasattr(view, "all_patterns")
+        assert not hasattr(view, "burnout_risks")
 
     def test_agent_view(self, kala_module):
         """Test AgentView (full patterns visible)."""
         AgentView = kala_module["AgentView"]
 
         view = AgentView(
-            patterns_detected=["burnout_risk", "high_engagement"],
-            attractor_states={"community_health": 0.8},
+            vessel_id="vessel1",
+            burnout_risks=["alice", "bob"],
+            withdrawal_signals=["charlie"],
         )
-        assert "burnout_risk" in view.patterns_detected
+        assert "alice" in view.burnout_risks
+        # AgentView has full pattern visibility
+        assert hasattr(view, "burnout_risks")
+        assert hasattr(view, "withdrawal_signals")
 
 
 # =============================================================================
@@ -503,9 +511,10 @@ class TestHumeVoice:
     def test_voice_profile_creation(self, hume_module):
         """Test VoiceProfile creation."""
         VoiceProfile = hume_module["VoiceProfile"]
+        VoiceStyle = hume_module["VoiceStyle"]
 
         profile = VoiceProfile(
-            voice_style="warm",
+            voice_style=VoiceStyle.WARM,
             pitch="medium",
             pace="natural",
         )
@@ -516,8 +525,9 @@ class TestHumeVoice:
         """Test AgentPersona creation."""
         AgentPersona = hume_module["AgentPersona"]
         VoiceProfile = hume_module["VoiceProfile"]
+        VoiceStyle = hume_module["VoiceStyle"]
 
-        voice = VoiceProfile(voice_style="professional")
+        voice = VoiceProfile(voice_style=VoiceStyle.PROFESSIONAL)
         persona = AgentPersona(
             id="agent1",
             name="Helper",
@@ -543,8 +553,8 @@ class TestHumeVoice:
         persona = create_human_proxy_persona(
             vessel_id="v1",
             human_id="human1",
-            proxy_name="Parent Self",
-            proxy_role="parent",
+            human_name="Parent Self",
+            role="parent",
         )
         assert persona.is_human_proxy == True
         assert persona.human_id == "human1"
